@@ -27,7 +27,8 @@ DURABILITY   storage-common (WAL, fsync)
 - [ ] M0 바이트와 파일: 레코드 직렬화, CRC32C, `FileChannel`
   - [x] FrameCodec (프레임 인코딩·손상 감지)
   - [x] LogRecordCodec (PUT · DELETE · BATCH · MERGE_FOOTER)
-  - [ ] AppendOnlyFile, SyncPolicy, DirectoryLock
+  - [x] AppendOnlyFile, IoCounters
+  - [ ] SyncPolicy, DirectoryLock
 - [ ] M1 추가 전용 로그 KV (Bitcask형)
 - [ ] M2 LSM-tree
 - [ ] M3 B+tree

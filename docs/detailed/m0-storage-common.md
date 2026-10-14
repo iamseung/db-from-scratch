@@ -111,22 +111,18 @@ sealed interface BatchableRecord : LogRecord { val key: ByteArray }
 ## 5. AppendOnlyFile
 
 ```kotlin
-class AppendOnlyFile private constructor(
-    val path: Path,
-    private val channel: FileChannel,
-    private val counters: IoCounters,
-) : AutoCloseable {
-    val size: Long                                   // 다음 append 위치
+class AppendOnlyFile private constructor(...) : FrameSource, AutoCloseable {
+    override var size: Long                          // 다음 append 위치 (private set)
 
     fun append(payload: ByteArray): Long             // 프레임을 쓰고 프레임 시작 offset 반환
-    fun readFrame(offset: Long): FrameReadResult     // 위치 지정 읽기 (channel.read(buf, pos))
+    fun readFrame(offset: Long): FrameReadResult     // = FrameCodec.read(this, offset)
     fun frames(from: Long = 0): Sequence<Pair<Long, FrameReadResult>>
     fun truncate(newSize: Long)                      // 복구용
     fun sync()                                       // channel.force(true)
 
     companion object {
         fun openForAppend(path: Path, counters: IoCounters): AppendOnlyFile
-        fun openReadOnly(path: Path, counters: IoCounters): AppendOnlyFile
+        fun openReadOnly(path: Path, counters: IoCounters): AppendOnlyFile   // append/truncate/sync 시 IllegalStateException
     }
 }
 ```
@@ -136,6 +132,9 @@ class AppendOnlyFile private constructor(
 - 쓰기는 `channel.write(buf, position)` 대신 **append 위치를 직접 관리**한다(`size` 필드). `APPEND` 모드는 OS가 위치를 정해 버려서 반환할 offset을 정확히 알 수 없다.
 - 프레임 하나를 `ByteBuffer` 하나로 만들어 `write` 루프로 끝까지 쓴다(`write`는 일부만 쓸 수 있다).
 - 읽기는 `channel.read(dst, position)` (pread). 채널의 공유 position을 건드리지 않으므로 나중에 읽기 동시성을 열 때 그대로 쓸 수 있다.
+- `FrameSource`를 구현하므로 손상 판정 코드는 `FrameCodec` 하나뿐이다. 파일 전용 읽기 경로를 따로 만들지 않는다.
+- append 도중 예외가 나면 `size`는 그대로이고, 일부 쓰인 바이트는 다음 append가 같은 위치에 덮어쓴다. 그 상태로 프로세스가 죽으면 재오픈 시 `size = channel.size()`에 쓰레기 꼬리가 포함되고, 이것은 손상 프레임으로 보여 복구가 잘라낸다.
+- `openForAppend`는 손상된 꼬리를 자동으로 자르지 않는다. 잘라낼지(`TOLERATE_TAIL`) 멈출지(`STRICT`)는 엔진의 복구 정책이 정한다.
 
 ## 6. SyncPolicy와 "확정"의 정의
 
@@ -181,7 +180,7 @@ class IoCounters {
 | `FrameCorruptionTest` | 파일을 1바이트씩 잘라가며(0 ~ 프레임 크기) 매번 `Corrupted` 또는 이전 프레임까지 `Ok` |
 | `BitFlipTest` | payload의 임의 비트 하나를 뒤집으면 `checksum-mismatch` |
 | `LogRecordCodecTest` | 타입별 바이트 레이아웃·왕복, 모든 길이로 잘라 손상 판정, 중첩·footer 금지, 미지 타입·남는 바이트 거부 |
-| `AppendOnlyFileTest` | append가 반환한 offset으로 readFrame 하면 같은 payload, truncate 후 size 일치 |
+| `AppendOnlyFileTest` | append offset으로 읽기, 재오픈 후 이어 쓰기, 잘린 꼬리 truncate 후 정상 append, 읽기 전용 거부, 카운터 |
 | `DirectoryLockTest` | 같은 디렉터리 두 번 열기 실패 |
 
 완료 조건 (로드맵 M0): **중간에 잘린 레코드를 체크섬으로 감지해 버린다.** → `FrameCorruptionTest`가 이것을 직접 증명한다.

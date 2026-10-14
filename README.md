@@ -28,7 +28,7 @@ DURABILITY   storage-common (WAL, fsync)
 - [ ] M1 추가 전용 로그 KV (Bitcask형)
   - [x] 엔진 공통 계약 테스트 (`kv-api` testFixtures)
   - [x] put · get · delete · scan · writeBatch, 복구, rollover
-  - [ ] `kill -9` 크래시 테스트
+  - [x] `kill -9` 크래시 테스트
   - [ ] merge + merge 크래시 테스트
 - [ ] M2 LSM-tree
 - [ ] M3 B+tree

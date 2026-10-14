@@ -260,8 +260,20 @@ process.destroyForcibly()  (SIGKILL)
              key-(k+1)은 있어도 없어도 됨 (쓰는 중이었음)
 ```
 
-- 자식 실행 classpath는 `System.getProperty("java.class.path")`를 그대로 넘긴다.
-- 50회 반복. 로드맵 M1 완료 조건이 이 테스트다.
+- 자식 실행 classpath는 Gradle이 `crash.child.classpath` 시스템 속성으로 넘긴다. 테스트 워커의 `java.class.path`는 전체 classpath를 담는다는 보장이 없다.
+- 검증 기준은 "ACK한 키가 모두 있다"보다 강하게 잡는다. 남은 키는 **빈틈없는 앞부분 0..m (m ≥ 마지막 ACK)**이어야 하고, 배치 모드는 키 수가 배치 크기의 배수여야 한다(배치가 통째로 남거나 사라짐).
+- 시나리오: EVERY_WRITE 단일 put 50회, 배치 20회, MANUAL 20회. 세그먼트 4 KiB로 rollover 도중 크래시도 포함한다. 로드맵 M1 완료 조건이 이 테스트다.
+
+#### 실행해서 관찰한 것 (macOS, APFS, 2026-10-14)
+
+| 관찰 | 의미 |
+|---|---|
+| 90라운드 모두 STRICT 복구로도 열림 = 잘린 프레임 0회 | 커널은 진행 중인 `write()`를 끝낸 뒤 SIGKILL을 처리한다. 프로세스 크래시는 프레임을 자르지 않는다. 4 MiB 값으로 30회 실험해도 같았다 |
+| ACK보다 프레임이 더 많이 남은 라운드가 여러 번 | `write()`가 끝나고 ACK를 출력하기 전에 죽은 경우. "빈틈없는 앞부분" 기준이 필요한 이유 |
+| MANUAL도 전부 통과 | fsync를 안 해도 OS 페이지 캐시에 넘어간 데이터는 프로세스가 죽어도 남는다. 차이는 전원 차단에서만 난다 |
+| EVERY_WRITE 50라운드 약 40초, MANUAL 20라운드 약 2초 | 라운드당 쓰기 수가 같은 분포인데 차이가 크다. 대부분 fsync 비용으로 보이며 M4에서 정확히 측정한다 |
+
+잘린 꼬리는 전원 차단이나 OS 크래시에서 생긴다(Linux는 큰 쓰기 도중 치명적 시그널에서 부분 쓰기를 남길 수 있다고 알려져 있으나 여기서 검증하지 않았다). 그래서 복구 경로는 `LogEngineTest`에서 바이트를 직접 잘라 검증한다.
 
 ### 11.4 손상·merge 크래시 테스트
 
@@ -286,6 +298,6 @@ process.destroyForcibly()  (SIGKILL)
 3. ✅ `engine-log`: Keydir → 단일 세그먼트 put/get/delete → 복구 → 계약 테스트 통과
 4. ✅ rollover → 다중 세그먼트 복구 (`segmentSizeBytes = 1`로 계약 테스트를 한 번 더 돌려 검증)
 5. ✅ writeBatch
-6. 크래시 테스트 (`kill -9`)
+6. ✅ 크래시 테스트 (`kill -9`)
 7. merge → merge 크래시 테스트
 8. 측정 (§12)

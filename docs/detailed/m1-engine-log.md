@@ -276,7 +276,7 @@ process.destroyForcibly()  (SIGKILL)
 | 90라운드 모두 STRICT 복구로도 열림 = 잘린 프레임 0회 | 커널은 진행 중인 `write()`를 끝낸 뒤 SIGKILL을 처리한다. 프로세스 크래시는 프레임을 자르지 않는다. 4 MiB 값으로 30회 실험해도 같았다 |
 | ACK보다 프레임이 더 많이 남은 라운드가 여러 번 | `write()`가 끝나고 ACK를 출력하기 전에 죽은 경우. "빈틈없는 앞부분" 기준이 필요한 이유 |
 | MANUAL도 전부 통과 | fsync를 안 해도 OS 페이지 캐시에 넘어간 데이터는 프로세스가 죽어도 남는다. 차이는 전원 차단에서만 난다 |
-| EVERY_WRITE 50라운드 약 40초, MANUAL 20라운드 약 2초 | 라운드당 쓰기 수가 같은 분포인데 차이가 크다. 대부분 fsync 비용으로 보이며 M4에서 정확히 측정한다 |
+| EVERY_WRITE 50라운드 약 40초, MANUAL 20라운드 약 2초 | 라운드당 쓰기 수가 같은 분포인데 차이가 크다. 측정 결과 macOS JDK의 `force()`가 `F_FULLFSYNC`라 쓰기당 약 3.9 ms가 든다 ([측정 결과](../measurements/m1-log-engine.md) §1) |
 
 잘린 꼬리는 전원 차단이나 OS 크래시에서 생긴다(Linux는 큰 쓰기 도중 치명적 시그널에서 부분 쓰기를 남길 수 있다고 알려져 있으나 여기서 검증하지 않았다). 그래서 복구 경로는 `LogEngineTest`에서 바이트를 직접 잘라 검증한다.
 
@@ -297,6 +297,8 @@ process.destroyForcibly()  (SIGKILL)
 
 ## 12. 측정해서 기록할 것 (M4 준비)
 
+결과: [docs/measurements/m1-log-engine.md](../measurements/m1-log-engine.md). EVERY_WRITE는 macOS에서 건당 약 3.9 ms라 100만 건 대신 1만 건으로 쟀다.
+
 | 항목 | 방법 |
 |---|---|
 | put 처리량: EVERY_WRITE vs MANUAL | 100만 건, 값 100 B |
@@ -314,4 +316,4 @@ process.destroyForcibly()  (SIGKILL)
 5. ✅ writeBatch
 6. ✅ 크래시 테스트 (`kill -9`)
 7. ✅ merge → merge 크래시 테스트 (FaultInjector 5지점 + `kill -9` merge 모드) + 모델 기반 무작위 테스트
-8. 측정 (§12)
+8. ✅ 측정 (§12) → [결과](../measurements/m1-log-engine.md)

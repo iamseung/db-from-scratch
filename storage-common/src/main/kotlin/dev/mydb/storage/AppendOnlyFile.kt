@@ -58,7 +58,7 @@ class AppendOnlyFile private constructor(
 
     /**
      * 지금까지 쓴 내용을 디스크에 확정한다 (fsync).
-     * macOS의 fsync는 디스크 자체 캐시까지 비우지 않으므로 전원 차단까지 보장하지는 않는다.
+     * macOS의 JDK는 force()를 fcntl(F_FULLFSYNC)로 구현해 디스크 자체 캐시까지 비운다. 그래서 macOS에서는 건당 수 ms가 든다.
      */
     fun sync() {
         checkWritable()

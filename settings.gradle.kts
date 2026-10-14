@@ -5,4 +5,5 @@ include(
     "kv-api",
     "storage-common",
     "engine-log",
+    "bench",
 )

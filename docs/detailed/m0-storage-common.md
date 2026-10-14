@@ -144,13 +144,18 @@ enum class SyncPolicy { EVERY_WRITE, MANUAL }
 
 | 정책 | `put` 반환 시 보장 | 용도 |
 |---|---|---|
-| `EVERY_WRITE` (기본) | OS 크래시·전원 차단 후에도 남음* | 크래시 테스트, 정확성 기준 |
+| `EVERY_WRITE` (기본) | OS 크래시·전원 차단 후에도 남음 | 크래시 테스트, 정확성 기준 |
 | `MANUAL` | 프로세스 크래시(`kill -9`)까지만 남음. 전원 차단은 마지막 `flush()` 이후 유실 가능 | 처리량 측정, 그룹 커밋 비교 |
 
-\* **macOS 주의**: Java `force(true)`는 macOS에서 `fsync`로 매핑되는데, macOS의 `fsync`는 디스크 자체 캐시까지 비우지 않는다(`F_FULLFSYNC` 필요, Java에서 직접 호출 불가). 따라서 macOS에서 `EVERY_WRITE`의 실제 보장은 "OS 크래시까지"다. 전원 차단 실험은 Linux에서만 의미가 있다. 이 차이를 README와 측정 결과에 명시한다.
+**macOS에서 `force()`가 하는 일** (측정과 소스로 확인, [측정 결과](../measurements/m1-log-engine.md) §1):
+
+- OpenJDK의 macOS 구현(`src/java.base/macosx/native/libnio/ch/FileDispatcherImpl.c`의 `force0`)은 `fcntl(fd, F_FULLFSYNC)`를 호출하고, 실패할 때만 `fsync`로 물러난다. 인자 `metaData`가 true든 false든 같다.
+- macOS의 일반 `fsync`는 디스크 자체 쓰기 캐시를 비우지 않지만, `F_FULLFSYNC`는 비운다. 그래서 Java의 `force()`는 macOS에서 전원 차단까지 보장하는 대신 비싸다.
+- 실측 (M4 Pro, APFS): `fsync` 21 µs/쓰기, `F_FULLFSYNC` 3,824 µs/쓰기, Java `EVERY_WRITE` put 3,911 µs/건.
+- 처음 이 문서는 "Java force는 macOS에서 fsync로 매핑된다"고 적었으나 측정에서 틀린 것으로 드러나 고쳤다.
 
 학습 질문으로 남길 것:
-- `force(false)`(fdatasync)로 바꿔도 되는가? 추가 쓰기는 파일 크기(메타데이터)를 바꾸는데, Linux `fdatasync`는 데이터를 읽는 데 필요한 메타데이터(크기)는 함께 내린다. → M4에서 두 방식의 지연 차이를 측정.
+- `force(false)`(fdatasync)로 바꿔도 되는가? 추가 쓰기는 파일 크기(메타데이터)를 바꾸는데, Linux `fdatasync`는 데이터를 읽는 데 필요한 메타데이터(크기)는 함께 내린다. → Linux에서 두 방식의 지연 차이를 측정할 것. macOS JDK는 두 경우 모두 `F_FULLFSYNC`라 차이가 없다.
 - 새 파일을 만든 뒤 **디렉터리 엔트리**도 fsync해야 파일 존재 자체가 확정된다. Linux에서는 `FileChannel.open(dir, READ).force(true)`가 동작하고, 지원하지 않는 OS에서는 예외를 삼킨다 → `Fsync.directory(dir)` 헬퍼로 분리.
 
 ## 7. IoCounters

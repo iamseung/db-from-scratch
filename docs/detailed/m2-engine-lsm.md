@@ -47,15 +47,13 @@ engine-lsm → storage-common → (kv-api)
 
 ```
 engine-lsm/src/main/kotlin/dev/mydb/engine/lsm/
-├── LsmEngine.kt              // KvEngine 구현, open/복구, 쓰기·읽기 경로
-├── LsmOptions.kt
+├── LsmEngine.kt              // KvEngine 구현, open/복구, 쓰기·읽기 경로, flush·compaction
 ├── FileNames.kt              // 000012.sst / 000013.wal / MANIFEST / *.tmp 규칙
-├── FaultInjector.kt          // flush·compaction 단계별 크래시 흉내 (M1과 같은 방식)
-├── memtable/
-│   └── MemTable.kt           // 정렬 맵 + 크기 추적, Put/Tombstone
+├── LsmOptions.kt             // 설정 + LsmFaultInjector/LsmStep + CompactionResult
+├── MemTable.kt               // 정렬 맵 + 크기 추적
 ├── sstable/
-│   ├── BlockBuilder.kt       // 정렬된 엔트리를 ~4 KiB 블록으로
-│   ├── BlockReader.kt        // 블록 안 순차 탐색
+│   ├── Block.kt              // data block 인코딩·디코딩 (블록 안은 순차 탐색)
+│   ├── TableMeta.kt          // MANIFEST가 기억하는 테이블 정보
 │   ├── BloomFilter.kt
 │   ├── Footer.kt
 │   ├── SSTableWriter.kt      // tmp에 쓰고 sync 후 rename
@@ -65,10 +63,9 @@ engine-lsm/src/main/kotlin/dev/mydb/engine/lsm/
 │   ├── Manifest.kt           // 편집 로그 기록·재생
 │   └── Version.kt            // 특정 시점의 테이블 목록 (불변) + 참조 카운트
 ├── compaction/
-│   ├── SizeTieredPicker.kt   // 어떤 테이블들을 합칠지
-│   └── Compactor.kt          // 병합 실행
-└── iterator/
-    └── MergingIterator.kt    // k-way 병합, 최신 우선, tombstone 숨김
+│   └── SizeTieredPicker.kt   // 어떤 테이블들을 합칠지 (병합 실행은 LsmEngine.runCompaction)
+├── MemValue.kt               // Put / Tombstone, Entry
+└── MergingIterator.kt        // k-way 병합, 최신 우선, tombstone 숨김
 ```
 
 ## 4. 데이터 모델
@@ -99,6 +96,7 @@ memtable·SSTable·병합 반복자가 모두 이 두 가지만 다룬다. LSM�
 
 - 각 SSTable은 `age`(u64)를 가진다. flush된 테이블은 단조 증가하는 flush 번호를 받는다.
 - compaction 결과는 **입력 중 가장 큰 age**를 물려받는다. 입력이 나이순으로 연속이므로, 결과는 입력보다 새 테이블들보다 여전히 오래되고 입력보다 오래된 테이블들보다 새롭다.
+  - 정확히는 [입력 최소 age, 입력 최대 age] 안의 어떤 값이어도 순서가 유지된다. 돌연변이 테스트에서 최솟값으로 바꿔도 아무 테스트도 실패하지 않아 확인했다(버그가 아니라 동등한 선택). 최댓값을 쓰는 것은 관례일 뿐이다.
 - 파일 번호(id)는 나이와 다르다. compaction 결과는 새 파일 번호를 받지만 나이는 입력에서 물려받는다. 이 둘을 섞으면 compaction 결과가 실제보다 새것으로 취급되어 옛 값이 새 값을 가린다.
 - 읽기 우선순위: memtable → SSTable을 age 내림차순.
 - MVCC(M7)는 KV 키 안에 commitTs를 인코딩하므로 엔진 수준 sequence number가 없어도 된다.
@@ -168,6 +166,7 @@ data block마다 엔트리 하나. **블록의 마지막 키**를 기록한다.
 - 키당 `bloomBitsPerKey`(기본 10) 비트, 해시 수 `k = round(bitsPerKey × ln 2)` = 7. 이론 위양성률 약 0.8%.
 - 해시: 키 바이트의 64비트 FNV-1a → 상위·하위 32비트를 `h1`, `h2`로 나눠 `h1 + i × h2` (i = 0..k-1)로 k개 위치를 만든다(Kirsch–Mitzenmacher 이중 해싱).
 - FNV-1a는 분포가 최상급은 아니다. 테스트에서 실제 위양성률을 재서 2%를 넘으면 해시를 바꾼다(§12.1).
+  - **측정 결과**: 순차 키(`key-00000000` …) 10만 개, 넣지 않은 키 10만 개로 **0.816%**. 이론값 0.82%와 일치해 FNV-1a를 유지한다.
 - 테이블을 열 때 메모리에 올린다. 키당 1.25 B.
 - `bloomBitsPerKey = 0`이면 bloom을 만들지 않는다(측정 비교용).
 
@@ -386,6 +385,24 @@ MergingIterator(
 
 ### 12.3 M2 전용
 
+> 구현 후 메모 (2026-10-14)
+> - 크래시 지점 테스트는 "예외를 던진 put도 확정된 쓰기"로 모델을 잡는다. 예외는 WAL append·memtable 반영 **뒤** flush·compaction에서 나기 때문이다. 재시작을 두 번 해서 같은 결과인지, MANIFEST가 모르는 `.sst`가 없는지도 본다.
+> - MANIFEST 손상 테스트는 "sync 전에 일부만 쓰인 편집"을 흉내 낸다. 이미 sync된 편집을 자르는 것은 크래시가 아니라 디스크 손상이고, 그 경우 해당 flush의 WAL은 이미 지워져 데이터가 사라지는 것이 맞다(복구 대상 아님).
+> - 무작위 테스트는 memtable 256 B로 77초가 걸렸다(flush 수백 번 × SSTable·MANIFEST fsync). 1 KiB로 늘려 30초.
+> - 크래시·무작위 테스트는 `@Tag("slow")`로 기본 `test`에서 빼고 `./gradlew slowTest`로 돌린다.
+>
+> **돌연변이 검증** — 일부러 버그를 넣어 테스트가 잡는지 확인했다.
+>
+> | 넣은 버그 | 잡은 테스트 |
+> |---|---|
+> | compaction이 항상 tombstone을 버림 | 무작위, "지운 키가 되살아나지 않는다", 크래시 지점 (3개) |
+> | scan이 붙잡은 입력 파일도 바로 삭제 | "scan 반복자가 열려 있는 동안…" (1개) |
+> | 재시작 시 WAL 재생 생략 | 계약(재오픈), 크래시 4종, 무작위 (6개 이상) |
+> | compaction 결과를 최신 테이블로 취급 (age = nextAge) | **처음엔 아무것도 못 잡음** → "오래된 구간만 합쳐도 더 새 테이블의 값이 이긴다" 추가 후 검출 (`v3` 기대, `v1` 반환) |
+> | compaction 결과 age = 입력 최솟값 | 못 잡음 — 동등한 선택이라 정상 (§4.3) |
+>
+> 빈틈이었던 이유: 무작위 테스트의 `compactAll`은 전체를 합치고, 자동 compaction은 방금 flush된 최신 테이블을 포함하는 구간을 주로 골라서, "최신이 아닌 구간 + 더 새 테이블에 같은 키" 조합이 생기지 않았다.
+
 - FaultInjector 4지점(`FLUSH_TABLE_WRITTEN`, `FLUSH_COMMITTED`, `COMPACTION_TABLE_WRITTEN`, `COMPACTION_COMMITTED`) + `INPUT_DELETED`에서 크래시 후 재시작 → 모델과 동일, 고아 파일 없음.
 - MANIFEST 마지막 편집을 바이트 단위로 잘라 재시작 → 그 편집 이전 상태.
 - scan 반복자를 연 채로 compaction → 반복자는 끝까지 옛 데이터를 돌려주고, 닫은 뒤에야 입력 파일이 지워짐.
@@ -435,11 +452,11 @@ data class LsmOptions(
 ## 16. 구현 순서
 
 1. ✅ 공통 하네스 이동: `KvEngineRandomTest`(testFixtures), 엔진 독립 크래시 하네스 → M1이 그대로 통과하는지 확인
-2. `MemTable` + `MergingIterator`
-3. `BlockBuilder`/`BlockReader` → `BloomFilter` → `Footer` → `SSTableWriter`/`SSTableReader`
-4. `ManifestEdit`/`Manifest`/`Version`
-5. `LsmEngine`: WAL + memtable + flush + get/scan → 계약 테스트 통과
-6. 복구 (§11) → 크래시 테스트
-7. `SizeTieredPicker` + `Compactor` + Version 참조 카운트
-8. FaultInjector 테스트, 무작위 테스트, 크래시 테스트 (flush·compaction 구간)
+2. ✅ `MemTable` + `MergingIterator`
+3. ✅ `Block` → `BloomFilter` → `Footer` → `SSTableWriter`/`SSTableReader` (BlockBuilder/BlockReader는 `Block` 하나로 합침)
+4. ✅ `ManifestEdit`/`Manifest`/`Version`
+5. ✅ `LsmEngine`: WAL + memtable + flush + get/scan → 계약 테스트 통과
+6. ✅ 복구 (§11) → 크래시 테스트
+7. ✅ `SizeTieredPicker` + compaction(`LsmEngine.runCompaction`) + Version 참조 카운트
+8. ✅ FaultInjector 테스트, 무작위 테스트, 크래시 테스트 (flush·compaction 구간)
 9. 측정 (§15)

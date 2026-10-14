@@ -5,6 +5,7 @@ import java.util.TreeMap
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.io.TempDir
 
 /**
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir
  * put/delete/batch/scan에 재오픈과 엔진별 유지 작업(merge, compaction)을 섞어 단위 테스트가 놓치는 조합을 찾는다.
  * 실패하면 메시지의 seed로 그대로 재현할 수 있다.
  */
+@Tag("slow")
 abstract class KvEngineRandomTest {
     @TempDir
     lateinit var dir: Path

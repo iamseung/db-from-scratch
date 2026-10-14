@@ -10,6 +10,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.io.TempDir
 
 /**
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.io.TempDir
  * SIGKILL을 처리하므로 프레임은 통째로 쓰이거나 아예 안 쓰인다. 4 MiB 값으로 30회 실험해도 같았다.
  * 잘린 꼬리 복구 경로는 엔진별 테스트가 바이트를 직접 잘라 검증한다.
  */
+@Tag("slow")
 abstract class KvEngineCrashTest {
     @TempDir
     lateinit var root: Path

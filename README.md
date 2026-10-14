@@ -33,6 +33,8 @@ DURABILITY   storage-common (WAL, fsync)
   - [x] 측정 → [결과](docs/measurements/m1-log-engine.md)
 - [ ] M2 LSM-tree
   - [x] 상세 설계
+  - [x] 구현 (memtable, SSTable, bloom, MANIFEST, size-tiered compaction, Version 고정) + 하네스·돌연변이 검증
+  - [ ] 측정
 - [ ] M3 B+tree
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)
 - [ ] M5 문서 계층
@@ -43,7 +45,8 @@ DURABILITY   storage-common (WAL, fsync)
 ## 빌드
 
 ```bash
-./gradlew test
+./gradlew test       # 빠른 테스트 (약 20초)
+./gradlew slowTest   # kill -9 크래시·모델 기반 무작위 테스트 (약 4분)
 ```
 
 ## 측정

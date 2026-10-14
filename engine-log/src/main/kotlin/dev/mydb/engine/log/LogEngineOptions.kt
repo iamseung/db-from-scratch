@@ -10,6 +10,8 @@ data class LogEngineOptions(
     val segmentSizeBytes: Long = 4L * 1024 * 1024,
     val syncPolicy: SyncPolicy = SyncPolicy.EVERY_WRITE,
     val recoveryMode: RecoveryMode = RecoveryMode.TOLERATE_TAIL,
+    /** 테스트 전용: merge 단계별 크래시 흉내. */
+    val faultInjector: FaultInjector = FaultInjector.NONE,
 ) {
     init {
         require(segmentSizeBytes > 0) { "segmentSizeBytes는 0보다 커야 합니다: $segmentSizeBytes" }

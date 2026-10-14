@@ -29,7 +29,8 @@ DURABILITY   storage-common (WAL, fsync)
   - [x] 엔진 공통 계약 테스트 (`kv-api` testFixtures)
   - [x] put · get · delete · scan · writeBatch, 복구, rollover
   - [x] `kill -9` 크래시 테스트
-  - [ ] merge + merge 크래시 테스트
+  - [x] merge + merge 크래시 테스트, 모델 기반 무작위 테스트
+  - [ ] 측정 (처리량, 쓰기 증폭, 재시작 시간, scan 비용, 힙 사용량)
 - [ ] M2 LSM-tree
 - [ ] M3 B+tree
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)

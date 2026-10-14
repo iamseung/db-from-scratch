@@ -22,6 +22,13 @@ internal class Keydir {
 
     fun remove(key: ByteArray): Location? = map.remove(BytesKey(key))
 
+    /** id ≤ [maxSegmentId] 세그먼트에 있는 엔트리를 디스크 순서로 돌려준다. merge가 순차 읽기를 하도록 정렬한다. */
+    fun entriesUpTo(maxSegmentId: Int): List<Pair<ByteArray, Location>> =
+        map.entries
+            .filter { (_, location) -> location.segmentId <= maxSegmentId }
+            .map { (key, location) -> key.bytes to location }
+            .sortedWith(compareBy({ it.second.segmentId }, { it.second.frameOffset }, { it.second.indexInBatch }))
+
     /** 쓰기 경로와 복구 경로가 같은 규칙으로 keydir를 바꾸도록 한 곳에 둔다. */
     fun apply(record: LogRecord, location: Location) {
         when (record) {

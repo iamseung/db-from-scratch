@@ -26,8 +26,9 @@ engine-log/src/main/kotlin/dev/mydb/engine/log/
 ├── LogEngineOptions.kt
 ├── Keydir.kt             // 메모리 인덱스, BytesKey, Location, Keydir.apply(record, location)
 ├── SegmentFiles.kt       // 파일 이름 규칙(000001.log), id 순 목록
-├── Merger.kt             // (예정) 불변 세그먼트 병합
-└── FaultInjector.kt      // (예정) 테스트용 크래시 지점 주입
+├── Merger.kt             // merge 파일 완료 판정·설치·복구 (엔진 merge와 재시작 복구가 공유)
+├── MergeResult.kt        // merge 결과: 대상 세그먼트, 살아 있는 엔트리, 전후 바이트
+└── FaultInjector.kt      // 테스트용 크래시 지점 주입 (MergeStep 5곳)
 ```
 
 ## 3. 디스크 레이아웃
@@ -163,8 +164,8 @@ tombstone이 필요한 이유: 이전 세그먼트에 그 키의 PUT이 남아 �
 
 ### 8.1 언제
 
-- 수동: `LogEngine.merge()`
-- 자동은 M1 범위 밖. 대신 `stats()`에 `deadBytesRatio`(덮어쓰이거나 삭제된 바이트 비율)를 노출해 언제 merge가 필요한지 관찰한다. dead 바이트는 put/delete 시 이전 `Location.frameSize`를 누적해 계산한다.
+- 수동: `LogEngine.merge(): MergeResult`
+- 자동은 M1 범위 밖. 원래 `deadBytesRatio`를 상시 집계하려 했으나, 배치 프레임 하나를 여러 키가 공유해서 키 단위로 죽은 바이트를 정확히 세기 어렵다. 대신 `MergeResult(bytesBefore, bytesAfter, liveEntries)`로 merge 한 번이 얼마나 회수했는지 관찰한다.
 
 ### 8.2 무엇을
 
@@ -185,6 +186,10 @@ tombstone이 필요한 이유: 이전 세그먼트에 그 키의 PUT이 남아 �
 8. keydir 갱신: 임시 맵의 각 키에 대해, keydir가 아직 옛 세그먼트를 가리키면 새 Location으로 교체
 9. 읽기용 세그먼트 핸들 교체
 ```
+
+- 5~7단계는 `Merger.install`로 묶어 재시작 복구(`Merger.recover`)와 같은 코드를 쓴다.
+- 2단계는 keydir 엔트리를 (세그먼트, offset) 순으로 정렬해 옛 세그먼트를 순차로 읽는다. 배치에 담겼던 값은 단일 PUT으로 풀어서 쓴다(이미 확정된 값이라 원자성이 필요 없다).
+- 같은 프로세스에서 앞선 merge가 실패해 남긴 `.merge` 파일은 확정 전이므로 새 merge 시작 시 지운다.
 
 - merged 파일이 id `n`을 재사용하는 이유: 활성 세그먼트 id는 n보다 크므로, 파일 이름 순서 = 시간 순서 불변식이 유지된다.
 - 8단계의 "아직 옛 세그먼트를 가리키면": M1은 단일 스레드라 merge 중 쓰기가 끼어들지 않지만, 나중에 백그라운드 merge로 바꿀 때를 대비한 조건이다.
@@ -277,6 +282,15 @@ process.destroyForcibly()  (SIGKILL)
 
 ### 11.4 손상·merge 크래시 테스트
 
+#### merge 테스트에서 관찰한 것 (2026-10-14)
+
+| 관찰 | 대응 |
+|---|---|
+| 무작위 시점 `kill -9`는 merge 구간(약 1ms)에 60회 중 0회 걸림 | 자식이 merge 직전 `MERGING`을 출력하고 부모가 받는 즉시 죽인다 → 30회 중 16회가 merge 도중 사망, 전부 통과 |
+| `Merger.recover`를 빼면 FOOTER_WRITTEN · COMMITTED · OLD_LOG_DELETED · 깨진 footer 4개 테스트가 실패 | 크래시 테스트가 복구 경로를 실제로 검증한다는 확인 (돌연변이 테스트) |
+| 무작위 모델 테스트가 EVERY_WRITE로 44초 | 의미 검증이 목적이라 MANUAL로 바꿔 13초 |
+
+
 - 마지막 세그먼트 끝에 임의 바이트를 붙이거나 잘라낸 뒤 재오픈 → 이전 데이터 유지, `truncatedBytes > 0`.
 - 중간 세그먼트를 손상 → `CorruptionException`.
 - §8.4 표의 각 FaultInjector 지점에서 예외를 던져 크래시를 흉내 낸 뒤 재오픈 → 모델과 데이터 동일.
@@ -299,5 +313,5 @@ process.destroyForcibly()  (SIGKILL)
 4. ✅ rollover → 다중 세그먼트 복구 (`segmentSizeBytes = 1`로 계약 테스트를 한 번 더 돌려 검증)
 5. ✅ writeBatch
 6. ✅ 크래시 테스트 (`kill -9`)
-7. merge → merge 크래시 테스트
+7. ✅ merge → merge 크래시 테스트 (FaultInjector 5지점 + `kill -9` merge 모드) + 모델 기반 무작위 테스트
 8. 측정 (§12)

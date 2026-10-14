@@ -39,6 +39,14 @@ class CrashTest {
         repeatRounds(rounds = 20, policy = SyncPolicy.EVERY_WRITE, mode = "batch")
 
     /**
+     * merge는 1ms 남짓이라 무작위 시점의 SIGKILL로는 거의 걸리지 않는다(60회 중 0회 관찰).
+     * 그래서 자식이 merge 직전에 출력하는 MERGING을 받는 즉시 죽여 merge 구간을 노린다.
+     */
+    @Test
+    fun `merge 도중 kill -9 되어도 확정된 쓰기가 모두 남는다`() =
+        repeatRounds(rounds = 30, policy = SyncPolicy.EVERY_WRITE, mode = "merge")
+
+    /**
      * MANUAL은 fsync를 하지 않지만 write()로 OS 페이지 캐시에 넘어간 데이터는 프로세스가 죽어도 OS가 디스크에 쓴다.
      * 그래서 프로세스 크래시는 견디고, 전원 차단에서만 차이가 난다 (m0 설계 §6).
      */
@@ -51,7 +59,9 @@ class CrashTest {
             val dataDir = root.resolve("$mode-$policy-$round")
             val context = "seed=$seed round=$round policy=$policy mode=$mode"
             // 세그먼트를 작게 잡아 크래시가 rollover 도중에도 걸리게 한다
-            val lastAck = runAndKill(dataDir, policy, mode, segmentSize = 4096, killAfterAcks = random.nextInt(1, 400), context)
+            // merge 모드는 n번째 merge가 시작될 때 죽인다
+            val killAfterAcks = if (mode == "merge") random.nextInt(1, 10) * CrashWorkload.MERGE_EVERY.toInt() else random.nextInt(1, 400)
+            val lastAck = runAndKill(dataDir, policy, mode, segmentSize = 4096, killAfterAcks, context)
             verify(dataDir, mode, lastAck, context)
         }
     }
@@ -68,12 +78,17 @@ class CrashTest {
         var lastAck = -1L
         try {
             val reader = process.inputStream.bufferedReader()
-            while (lastAck + 1 < killAfterAcks) {
+            while (true) {
                 val line = reader.readLine()
                     ?: fail("자식 프로세스가 ACK ${lastAck + 1} 전에 종료됐습니다 (exit=${process.waitFor()}) $context")
+                if (line == "MERGING") {
+                    if (lastAck + 1 >= killAfterAcks) break
+                    continue
+                }
                 lastAck = line.removePrefix("ACK ").toLong()
+                if (mode != "merge" && lastAck + 1 >= killAfterAcks) break
             }
-            // ACK 직후뿐 아니라 쓰기 한가운데서도 죽도록 약간 기다린다
+            // 신호 직후뿐 아니라 작업 한가운데서도 죽도록 약간 기다린다
             Thread.sleep(random.nextLong(0, 3))
         } finally {
             process.destroyForcibly()
@@ -98,6 +113,7 @@ class CrashTest {
             }
             entries.forEach { assertContentEquals(CrashWorkload.value(CrashWorkload.indexOf(it.key)), it.value, context) }
         }
+        assertEquals(emptyList(), SegmentFiles.listMerges(dataDir), "재시작 후 merge 파일이 남았습니다 $context")
     }
 
     private fun childClasspath(): String =

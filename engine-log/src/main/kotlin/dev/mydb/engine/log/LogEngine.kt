@@ -100,6 +100,52 @@ class LogEngine private constructor(
         }
     }
 
+    /**
+     * 활성 세그먼트를 뺀 모든 불변 세그먼트를 살아 있는 값만 담은 세그먼트 하나로 합친다.
+     *
+     * 대상이 활성 세그먼트를 제외한 전부이므로 tombstone을 버려도 된다. 출력보다 오래된 세그먼트가 남지 않아
+     * 지워진 키의 옛 PUT도 함께 사라진다. (일부 세그먼트만 병합하면 이 논리가 깨진다 → M2 compaction)
+     */
+    @Synchronized
+    fun merge(): MergeResult {
+        checkOpen()
+        val targets = segments.headMap(activeId).keys.toList()
+        if (targets.isEmpty()) return MergeResult(emptyList(), 0, 0, 0)
+        val mergedId = targets.last()
+        val bytesBefore = targets.sumOf { segments.getValue(it).size }
+        val fault = options.faultInjector
+
+        val live = keydir.entriesUpTo(mergedId)
+        val relocations = ArrayList<Triple<ByteArray, Location, Location>>(live.size)
+        val mergePath = SegmentFiles.mergePath(options.dataDir, mergedId)
+        // 같은 프로세스에서 앞선 merge가 실패하고 남긴 파일일 수 있다. 확정 전이므로 버려도 된다.
+        Files.deleteIfExists(mergePath)
+        AppendOnlyFile.openForAppend(mergePath, counters).use { out ->
+            for ((key, old) in live) {
+                val payload = LogRecordCodec.encode(LogRecord.Put(key, readValue(old)))
+                val offset = out.append(payload)
+                relocations += Triple(key, old, Location(mergedId, offset, FrameCodec.frameSize(payload.size)))
+                fault.reached(MergeStep.ENTRY_WRITTEN)
+            }
+            out.append(LogRecordCodec.encode(LogRecord.MergeFooter(live.size.toLong())))
+            fault.reached(MergeStep.FOOTER_WRITTEN)
+            out.sync()
+        }
+        Fsync.directory(options.dataDir)
+        fault.reached(MergeStep.COMMITTED)
+
+        targets.forEach { segments.remove(it)?.close() }
+        Merger.install(options.dataDir, mergedId, fault)
+        val merged = AppendOnlyFile.openReadOnly(SegmentFiles.logPath(options.dataDir, mergedId), counters)
+        segments[mergedId] = merged
+
+        // 단일 스레드라 지금은 항상 참이지만, 백그라운드 merge로 바꾸면 merge 중 덮어쓴 키를 되돌리지 않게 해 준다
+        for ((key, old, new) in relocations) {
+            if (keydir.get(key) == old) keydir.put(key, new)
+        }
+        return MergeResult(targets, live.size, bytesBefore, merged.size)
+    }
+
     @Synchronized
     override fun flush() {
         checkOpen()
@@ -177,6 +223,7 @@ class LogEngine private constructor(
             val counters = IoCounters()
             val segments = TreeMap<Int, AppendOnlyFile>()
             try {
+                Merger.recover(options.dataDir, counters)
                 val keydir = Keydir()
                 val logs = SegmentFiles.listLogs(options.dataDir)
                 logs.forEachIndexed { index, (id, path) ->

@@ -4,4 +4,5 @@ rootProject.name = "db-from-scratch"
 include(
     "kv-api",
     "storage-common",
+    "engine-log",
 )

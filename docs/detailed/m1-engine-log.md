@@ -22,14 +22,12 @@ engine-log → storage-common → kv-api
 
 ```
 engine-log/src/main/kotlin/dev/mydb/engine/log/
-├── LogEngine.kt          // KvEngine 구현, 공개 진입점 LogEngine.open(options)
+├── LogEngine.kt          // KvEngine 구현 + 복구(open) + rollover. 세그먼트는 TreeMap<id, AppendOnlyFile>
 ├── LogEngineOptions.kt
-├── Keydir.kt             // 메모리 인덱스
-├── Segment.kt            // 세그먼트 파일 하나 (id + AppendOnlyFile)
-├── SegmentSet.kt         // 활성 1개 + 불변 N개, id 발급, 파일 이름 규칙
-├── Recovery.kt           // 시작 시 디렉터리 → keydir 재구성
-├── Merger.kt             // 불변 세그먼트 병합
-└── FaultInjector.kt      // 테스트용 크래시 지점 주입
+├── Keydir.kt             // 메모리 인덱스, BytesKey, Location, Keydir.apply(record, location)
+├── SegmentFiles.kt       // 파일 이름 규칙(000001.log), id 순 목록
+├── Merger.kt             // (예정) 불변 세그먼트 병합
+└── FaultInjector.kt      // (예정) 테스트용 크래시 지점 주입
 ```
 
 ## 3. 디스크 레이아웃
@@ -73,7 +71,8 @@ class Keydir {
 }
 ```
 
-- **주의**: `ByteArray`의 `equals`는 내용이 아니라 참조를 비교해서, `HashMap` 키로 그대로 쓰면 같은 내용의 다른 배열을 찾지 못한다. 그래서 `BytesKey`로 감싸 `contentEquals` / `contentHashCode`를 쓴다. 생성 시 배열을 **복사**해 호출자가 원본을 바꿔도 인덱스가 깨지지 않게 한다.
+- **주의**: `ByteArray`의 `equals`는 내용이 아니라 참조를 비교해서, `HashMap` 키로 그대로 쓰면 같은 내용의 다른 배열을 찾지 못한다. 그래서 `BytesKey`로 감싸 `contentEquals` / `contentHashCode`를 쓴다. `Keydir.put`만 배열을 **복사**해 호출자가 원본을 바꿔도 인덱스가 깨지지 않게 한다. 조회용 `BytesKey`는 복사하지 않는다.
+- keydir 변경은 `Keydir.apply(record, location)` 한 곳에서만 한다. 쓰기 경로와 복구 경로가 다른 규칙으로 keydir를 바꾸면 재시작 전후 상태가 달라지기 때문이다.
 - 메모리 비용: 키 1개당 키 바이트 + 약 60~80바이트(객체 헤더, 해시 엔트리). 모든 키가 메모리에 있어야 한다는 것이 Bitcask의 핵심 제약이고, M2에서 LSM이 이것을 푸는 방식과 비교한다.
 - 정렬하지 않는 `HashMap`을 일부러 쓴다. `TreeMap`을 쓰면 범위 스캔이 쉬워지지만 그건 사실상 메모리 B-tree를 하나 더 두는 것이라 이 단계의 약점이 가려진다.
 
@@ -282,11 +281,11 @@ process.destroyForcibly()  (SIGKILL)
 
 ## 13. 구현 순서
 
-1. `storage-common`: FrameCodec → LogRecordCodec → AppendOnlyFile (M0 테스트까지)
-2. `kv-api` testFixtures: `KvEngineContractTest`
-3. `engine-log`: Keydir → 단일 세그먼트 put/get/delete → 복구 → 계약 테스트 통과
-4. rollover → 다중 세그먼트 복구
-5. writeBatch
+1. ✅ `storage-common`: FrameCodec → LogRecordCodec → AppendOnlyFile (M0 테스트까지)
+2. ✅ `kv-api` testFixtures: `KvEngineContractTest`
+3. ✅ `engine-log`: Keydir → 단일 세그먼트 put/get/delete → 복구 → 계약 테스트 통과
+4. ✅ rollover → 다중 세그먼트 복구 (`segmentSizeBytes = 1`로 계약 테스트를 한 번 더 돌려 검증)
+5. ✅ writeBatch
 6. 크래시 테스트 (`kill -9`)
 7. merge → merge 크래시 테스트
 8. 측정 (§12)

@@ -1,0 +1,7 @@
+dependencies {
+    // LogEngine이 KvEngine을 구현하므로 사용하는 쪽에도 kv-api 타입이 보여야 한다
+    "api"(project(":kv-api"))
+    "implementation"(project(":storage-common"))
+
+    "testImplementation"(testFixtures(project(":kv-api")))
+}

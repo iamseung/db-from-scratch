@@ -24,12 +24,12 @@ DURABILITY   storage-common (WAL, fsync)
 ## 로드맵
 
 - [x] 프로젝트 골격, `KvEngine` 인터페이스, 정렬 보존 키 인코딩
-- [ ] M0 바이트와 파일: 레코드 직렬화, CRC32C, `FileChannel`
-  - [x] FrameCodec (프레임 인코딩·손상 감지)
-  - [x] LogRecordCodec (PUT · DELETE · BATCH · MERGE_FOOTER)
-  - [x] AppendOnlyFile, IoCounters
-  - [ ] SyncPolicy, DirectoryLock
+- [x] M0 바이트와 파일: FrameCodec, LogRecordCodec, AppendOnlyFile, SyncPolicy, DirectoryLock
 - [ ] M1 추가 전용 로그 KV (Bitcask형)
+  - [x] 엔진 공통 계약 테스트 (`kv-api` testFixtures)
+  - [x] put · get · delete · scan · writeBatch, 복구, rollover
+  - [ ] `kill -9` 크래시 테스트
+  - [ ] merge + merge 크래시 테스트
 - [ ] M2 LSM-tree
 - [ ] M3 B+tree
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)

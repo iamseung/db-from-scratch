@@ -253,6 +253,8 @@ abstract class KvEngineContractTest {
 
 ### 11.3 크래시 테스트 (`kill -9`)
 
+> M2 착수 시 하네스를 엔진 독립으로 옮겼다: `kv-api` testFixtures의 `KvEngineCrashTest` + `CrashEngineFactory`. M1은 `LogEngineCrashTest`(팩토리 = `LogCrashEngineFactory`, 유지 작업 = merge)만 남는다. 무작위 테스트도 `KvEngineRandomTest`로 옮겼다. 아래 그림은 처음 만든 구조 그대로다.
+
 ```
 부모 테스트                                 자식 JVM (CrashWriterMain)
 ─────────────                               ─────────────────────────

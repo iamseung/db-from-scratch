@@ -33,4 +33,13 @@ subprojects {
     tasks.withType<Test> {
         useJUnitPlatform()
     }
+
+    // KvEngineCrashTest가 자식 JVM을 띄울 때 쓸 classpath. 테스트 워커의 java.class.path는 전체 classpath를 담지 않을 수 있다.
+    tasks.named<Test>("test") {
+        val testRuntimeClasspath = project.the<SourceSetContainer>()["test"].runtimeClasspath
+        inputs.files(testRuntimeClasspath)
+        doFirst {
+            systemProperty("crash.child.classpath", testRuntimeClasspath.asPath)
+        }
+    }
 }

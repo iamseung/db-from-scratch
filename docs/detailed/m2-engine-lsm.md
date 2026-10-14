@@ -382,7 +382,7 @@ MergingIterator(
 
 - `KvEngineContractTest` 상속 2개: 기본 설정, 그리고 memtable 256 B·블록 64 B·minThreshold 2로 flush와 compaction이 쉴 새 없이 일어나는 설정.
 - 모델 기반 무작위 테스트: M1의 `LogEngineRandomTest`를 `kv-api` testFixtures의 `KvEngineRandomTest`로 옮기고, 엔진별 유지 작업(M1 `merge()`, M2 `compact()`)을 훅으로 받는다.
-- `kill -9` 크래시 테스트: `CrashWriterMain`과 검증 로직을 엔진 독립으로 옮기고(엔진 생성 함수를 인자로), M1·M2가 같은 하네스를 쓴다. M2는 flush·compaction 직전에 신호를 출력해 그 구간을 노린다(M1 merge 모드와 같은 기법).
+- `kill -9` 크래시 테스트: `kv-api` testFixtures의 `KvEngineCrashTest`(`dev.mydb.kv.crash`)를 상속하고 `CrashEngineFactory`를 구현한다. 자식 JVM은 팩토리 클래스 이름을 인자로 받아 리플렉션으로 엔진을 만든다. 유지 작업 모드(`CrashMode.MAINTENANCE`)는 `compact()` 직전에 신호를 출력해 그 구간을 노린다. flush는 쓰기 도중 자동으로 일어나므로, memtable을 작게 잡으면 단일 put 모드에서 자연히 포함된다.
 
 ### 12.3 M2 전용
 
@@ -434,7 +434,7 @@ data class LsmOptions(
 
 ## 16. 구현 순서
 
-1. 공통 하네스 이동: `KvEngineRandomTest`(testFixtures), 엔진 독립 크래시 하네스 → M1이 그대로 통과하는지 확인
+1. ✅ 공통 하네스 이동: `KvEngineRandomTest`(testFixtures), 엔진 독립 크래시 하네스 → M1이 그대로 통과하는지 확인
 2. `MemTable` + `MergingIterator`
 3. `BlockBuilder`/`BlockReader` → `BloomFilter` → `Footer` → `SSTableWriter`/`SSTableReader`
 4. `ManifestEdit`/`Manifest`/`Version`

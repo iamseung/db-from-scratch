@@ -16,7 +16,8 @@
 
 ```
 storage-common/src/main/kotlin/dev/mydb/storage/
-├── Frame.kt            // 프레임 = 길이 + 체크섬으로 감싼 바이트 덩어리
+├── FrameSource.kt      // 프레임을 읽어 올 바이트 저장소 (메모리 배열 / 파일)
+├── FrameReadResult.kt  // Ok / EndOfFile / Corrupted + CorruptionReason
 ├── FrameCodec.kt       // 프레임 인코딩/디코딩, 손상 판정
 ├── LogRecord.kt        // 프레임 안의 payload: PUT / DELETE / BATCH / MERGE_FOOTER
 ├── LogRecordCodec.kt
@@ -27,7 +28,7 @@ storage-common/src/main/kotlin/dev/mydb/storage/
 └── CorruptionException.kt
 ```
 
-`build.gradle.kts`: `dependencies { implementation(project(":kv-api")) }`
+`kv-api` 의존성은 `IoCounters` → `EngineStats` 변환을 구현할 때 추가한다.
 
 ## 3. 프레임 포맷 (모든 로그 파일의 최소 단위)
 
@@ -49,20 +50,22 @@ offset  size  field
 
 ```kotlin
 sealed interface FrameReadResult {
-    data class Ok(val payload: ByteArray, val nextOffset: Long) : FrameReadResult
+    class Ok(val payload: ByteArray, val nextOffset: Long) : FrameReadResult
     data object EndOfFile : FrameReadResult                    // 정확히 파일 끝
-    data class Corrupted(val offset: Long, val reason: String) : FrameReadResult
+    data class Corrupted(val offset: Long, val reason: CorruptionReason) : FrameReadResult
 }
 ```
+
+디코딩은 `FrameSource`(크기 + 위치 지정 읽기) 위에서 동작한다. 테스트는 `ByteArrayFrameSource`로, `AppendOnlyFile`은 `FileChannel`로 같은 `FrameCodec.read`를 쓴다.
 
 `Corrupted` 판정 조건:
 
 | 조건 | reason |
 |---|---|
-| 남은 바이트 < 8 (헤더조차 다 못 씀) | `truncated-header` |
-| `length > MAX_PAYLOAD` | `length-overflow` |
-| 남은 바이트 < `8 + length` | `truncated-payload` |
-| CRC 불일치 | `checksum-mismatch` |
+| 남은 바이트 < 8 (헤더조차 다 못 씀) | `TRUNCATED_HEADER` |
+| `length > MAX_PAYLOAD` 또는 u32 상위 비트가 켜져 Int로 음수 | `LENGTH_OVERFLOW` |
+| 남은 바이트 < `8 + length` | `TRUNCATED_PAYLOAD` |
+| CRC 불일치 | `CHECKSUM_MISMATCH` |
 
 ### 3.2 손상 처리 정책 (결정 사항)
 

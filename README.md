@@ -25,6 +25,9 @@ DURABILITY   storage-common (WAL, fsync)
 
 - [x] 프로젝트 골격, `KvEngine` 인터페이스, 정렬 보존 키 인코딩
 - [ ] M0 바이트와 파일: 레코드 직렬화, CRC32C, `FileChannel`
+  - [x] FrameCodec (프레임 인코딩·손상 감지)
+  - [ ] LogRecordCodec
+  - [ ] AppendOnlyFile, SyncPolicy, DirectoryLock
 - [ ] M1 추가 전용 로그 KV (Bitcask형)
 - [ ] M2 LSM-tree
 - [ ] M3 B+tree

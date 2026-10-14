@@ -7,7 +7,7 @@ RDBMS와 NoSQL의 차이를 직접 만들어 보며 이해하기 위한 학습�
 이렇게 해서 "관계형이라서 생기는 차이"와 "저장 구조 때문에 생기는 차이"를 따로 측정합니다.
 
 - 설계 문서: [`docs/design.html`](docs/design.html)
-- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md)
+- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md) · [M2 engine-lsm](docs/detailed/m2-engine-lsm.md)
 - 언어: Kotlin (JVM 21), Spring 등 프레임워크 없이, 외부 의존성은 테스트용만
 
 ## 구조
@@ -32,6 +32,7 @@ DURABILITY   storage-common (WAL, fsync)
   - [x] merge + merge 크래시 테스트, 모델 기반 무작위 테스트
   - [x] 측정 → [결과](docs/measurements/m1-log-engine.md)
 - [ ] M2 LSM-tree
+  - [x] 상세 설계
 - [ ] M3 B+tree
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)
 - [ ] M5 문서 계층

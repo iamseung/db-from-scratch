@@ -93,12 +93,18 @@ MERGE_FOOTER (0x7F)  | entryCount u64 |        ← M1 merge 완료 표식
 
 ```kotlin
 sealed interface LogRecord {
-    data class Put(val key: ByteArray, val value: ByteArray) : LogRecord
-    data class Delete(val key: ByteArray) : LogRecord
-    data class Batch(val ops: List<LogRecord>) : LogRecord   // Put/Delete만 허용
+    class Put(override val key: ByteArray, val value: ByteArray) : BatchableRecord   // equals는 내용 비교
+    class Delete(override val key: ByteArray) : BatchableRecord
+    data class Batch(val ops: List<BatchableRecord>) : LogRecord                    // 빈 배치 금지
     data class MergeFooter(val entryCount: Long) : LogRecord
 }
+
+sealed interface BatchableRecord : LogRecord { val key: ByteArray }
 ```
+
+- 배치 중첩은 런타임 검사가 아니라 **타입으로** 막는다. `Batch.ops`는 `BatchableRecord`(Put/Delete)만 받는다.
+- 크기 상한은 생성자에서 검사(`IllegalArgumentException`)하고, 디코딩 중 상한 위반은 생성자에 도달하기 전에 `CorruptionException`으로 바꾼다. 같은 위반이라도 쓰는 쪽은 호출자 버그, 읽는 쪽은 디스크 손상이기 때문이다.
+- 디코딩 후 payload에 남는 바이트가 있으면 `CorruptionException`. 배치 count는 "op 하나 최소 5바이트"로 남은 바이트와 대조해 터무니없는 값(수십억 개 할당)을 막는다.
 
 `kv-api`의 `WriteOp`와 별도 타입으로 둔다. `WriteOp`는 엔진 바깥 계약, `LogRecord`는 디스크 포맷이라 바뀌는 이유가 다르다.
 
@@ -174,7 +180,7 @@ class IoCounters {
 | `FrameCodecTest` | 왕복 변환, 빈 payload, 상한 길이 |
 | `FrameCorruptionTest` | 파일을 1바이트씩 잘라가며(0 ~ 프레임 크기) 매번 `Corrupted` 또는 이전 프레임까지 `Ok` |
 | `BitFlipTest` | payload의 임의 비트 하나를 뒤집으면 `checksum-mismatch` |
-| `LogRecordCodecTest` | 타입별 왕복, BATCH 중첩 금지, 미지 타입 거부 |
+| `LogRecordCodecTest` | 타입별 바이트 레이아웃·왕복, 모든 길이로 잘라 손상 판정, 중첩·footer 금지, 미지 타입·남는 바이트 거부 |
 | `AppendOnlyFileTest` | append가 반환한 offset으로 readFrame 하면 같은 payload, truncate 후 size 일치 |
 | `DirectoryLockTest` | 같은 디렉터리 두 번 열기 실패 |
 

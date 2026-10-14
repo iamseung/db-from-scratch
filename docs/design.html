@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>직접 만드는 데이터베이스</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: 한 줄 문서 칼럼(본문 ~68ch) + 넓은 도판(다이어그램·표)만 칼럼 밖으로 확장. B+tree=청록, LSM=호박색을 끝까지 같은 의미로 사용 */
+:root {
+  --bg: #f6f7f8;
+  --paper: #ffffff;
+  --ink: #16202a;
+  --muted: #5b6874;
+  --rule: #d9dee3;
+  --accent: #1f4e79;      /* 문서 강조: 잉크 블루 */
+  --btree: #0e7470;       /* B+tree / 관계형 계열 */
+  --btree-soft: #e2f1f0;
+  --lsm: #a55d07;         /* LSM / NoSQL 계열 */
+  --lsm-soft: #fbefdf;
+  --shared: #eef1f5;
+  --code-bg: #f0f2f5;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --step--1: 0.84rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.55rem;
+  --step-3: 2.2rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1419; --paper: #151c23; --ink: #e3e8ed; --muted: #95a2ae; --rule: #2a343e;
+    --accent: #7fb2e5; --btree: #4cc2bb; --btree-soft: #12302f; --lsm: #e8a65a; --lsm-soft: #33260f;
+    --shared: #1c252e; --code-bg: #1a2129; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1419; --paper: #151c23; --ink: #e3e8ed; --muted: #95a2ae; --rule: #2a343e;
+  --accent: #7fb2e5; --btree: #4cc2bb; --btree-soft: #12302f; --lsm: #e8a65a; --lsm-soft: #33260f;
+  --shared: #1c252e; --code-bg: #1a2129; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.72;
+  padding-inline: 16px; padding-block: 0 72px;
+}
+.wrap { max-width: 980px; margin: 0 auto; }
+.col { max-width: 44rem; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+h1 { font-size: var(--step-3); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-2); font-weight: 700; }
+h3 { font-size: var(--step-1); font-weight: 700; }
+p { margin: 0; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+pre {
+  font-family: var(--font-mono); font-size: var(--step--1); line-height: 1.6;
+  background: var(--code-bg); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 14px 16px; margin: 0; overflow-x: auto;
+}
+.kw { color: var(--accent); font-weight: 600; }
+.cm { color: var(--muted); }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+}
+
+header.masthead { padding-block: 56px 36px; border-bottom: 1px solid var(--rule); display: grid; gap: 14px; }
+header.masthead .lede { color: var(--muted); font-size: var(--step-1); max-width: 40rem; }
+.meta-row { display: flex; flex-wrap: wrap; gap: 8px 20px; font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted); }
+
+section { padding-block: 48px 8px; display: grid; gap: 20px; }
+section > .head { display: grid; gap: 6px; }
+.stack { display: grid; gap: 14px; }
+
+/* 결론 박스 */
+.verdict {
+  background: var(--paper); border: 1px solid var(--rule); border-left: 4px solid var(--accent);
+  border-radius: 4px; padding: 22px 24px; display: grid; gap: 10px;
+}
+.verdict strong.big { font-size: var(--step-1); }
+
+/* 2x2 축 매트릭스 */
+.matrix-scroll { overflow-x: auto; }
+.matrix {
+  display: grid; grid-template-columns: 9rem 1fr 1fr; min-width: 560px;
+  border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--paper);
+}
+.matrix > div { padding: 12px 14px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); min-width: 0; }
+.matrix > div:nth-child(3n) { border-right: 0; }
+.matrix > div:nth-last-child(-n+3) { border-bottom: 0; }
+.matrix .ax { font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted); background: var(--shared); }
+.matrix .colh { font-weight: 700; }
+.matrix .colh.bt { color: var(--btree); }
+.matrix .colh.ls { color: var(--lsm); }
+.matrix .cell { font-size: var(--step--1); display: grid; gap: 4px; }
+.matrix .cell b { font-size: var(--step-0); }
+
+/* 언어 표 */
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: var(--step--1); }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; color: var(--muted); font-size: 0.78rem; letter-spacing: 0.04em; background: var(--shared); }
+tr:last-child td { border-bottom: 0; }
+tr.pick td { background: color-mix(in srgb, var(--accent) 8%, var(--paper)); }
+tr.pick td:first-child { font-weight: 700; color: var(--accent); }
+.tag {
+  display: inline-block; font-family: var(--font-mono); font-size: 0.72rem; font-weight: 600;
+  padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap;
+}
+.tag.bt { color: var(--btree); } .tag.ls { color: var(--lsm); } .tag.ac { color: var(--accent); } .tag.mu { color: var(--muted); }
+
+/* 계층 다이어그램 */
+.layers { display: grid; gap: 6px; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; }
+.layer { display: grid; grid-template-columns: 8.5rem 1fr; gap: 12px; align-items: stretch; }
+.layer .lbl { font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted); padding-top: 10px; letter-spacing: 0.03em; }
+.layer .boxes { display: grid; gap: 6px; grid-template-columns: 1fr; min-width: 0; }
+.layer .boxes.two { grid-template-columns: 1fr 1fr; }
+.box { border-radius: 4px; padding: 10px 12px; border: 1px solid var(--rule); background: var(--shared); display: grid; gap: 2px; min-width: 0; }
+.box .t { font-weight: 700; font-size: var(--step--1); }
+.box .d { font-size: 0.8rem; color: var(--muted); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.box.bt { background: var(--btree-soft); border-color: color-mix(in srgb, var(--btree) 40%, transparent); }
+.box.bt .t { color: var(--btree); }
+.box.ls { background: var(--lsm-soft); border-color: color-mix(in srgb, var(--lsm) 40%, transparent); }
+.box.ls .t { color: var(--lsm); }
+.box.seam { border: 2px dashed var(--accent); background: var(--paper); }
+.box.seam .t { color: var(--accent); }
+@media (max-width: 560px) {
+  .layer { grid-template-columns: 1fr; gap: 2px; }
+  .layer .lbl { padding-top: 6px; }
+}
+
+/* 슬롯 페이지 도판 */
+.page-scroll { overflow-x: auto; }
+.page-fig { min-width: 640px; display: grid; gap: 6px; }
+.page-bar { display: grid; grid-template-columns: 9fr 14fr 30fr 32fr; height: 64px; border: 1px solid var(--ink); border-radius: 3px; overflow: hidden; }
+.page-bar > div { display: grid; place-items: center; font-family: var(--font-mono); font-size: 0.76rem; text-align: center; padding: 4px; border-right: 1px solid var(--ink); line-height: 1.3; }
+.page-bar > div:last-child { border-right: 0; }
+.page-bar .hdr { background: var(--shared); }
+.page-bar .slots { background: var(--btree-soft); color: var(--btree); }
+.page-bar .free { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--rule) 6px 7px); color: var(--muted); }
+.page-bar .cells { background: var(--btree-soft); color: var(--btree); }
+.page-scale { display: grid; grid-template-columns: 9fr 14fr 30fr 32fr; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.page-scale span:last-child { display: flex; justify-content: space-between; }
+
+/* 키 인코딩 */
+.kv-list { display: grid; gap: 8px; }
+.kv { display: grid; grid-template-columns: 7rem 1fr; gap: 12px; align-items: baseline; padding: 10px 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; }
+.kv .who { font-size: var(--step--1); font-weight: 700; }
+.kv .enc { font-family: var(--font-mono); font-size: var(--step--1); overflow-wrap: anywhere; min-width: 0; }
+.kv .enc .seg-t { color: var(--accent); } .kv .enc .seg-k { color: var(--btree); } .kv .enc .seg-v { color: var(--muted); }
+@media (max-width: 520px) { .kv { grid-template-columns: 1fr; gap: 2px; } }
+
+/* 로드맵 */
+.roadmap { display: grid; gap: 0; border-left: 2px solid var(--rule); margin-left: 6px; }
+.ms { position: relative; padding: 0 0 26px 26px; display: grid; gap: 8px; }
+.ms::before {
+  content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--paper); border: 2px solid var(--muted);
+}
+.ms.bt::before { border-color: var(--btree); background: var(--btree-soft); }
+.ms.ls::before { border-color: var(--lsm); background: var(--lsm-soft); }
+.ms.cmp::before { border-color: var(--accent); background: var(--accent); }
+.ms .top { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.ms .num { font-family: var(--font-mono); font-weight: 600; color: var(--muted); font-size: var(--step--1); }
+.ms h3 { font-size: 1.05rem; }
+.ms dl { display: grid; grid-template-columns: 5.5rem 1fr; gap: 4px 12px; margin: 0; font-size: var(--step--1); }
+.ms dt { color: var(--muted); font-family: var(--font-mono); font-size: 0.76rem; padding-top: 2px; }
+.ms dd { margin: 0; min-width: 0; }
+@media (max-width: 520px) { .ms dl { grid-template-columns: 1fr; } .ms dd { margin-bottom: 4px; } }
+
+/* 결정 체크리스트 */
+.decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 10px; }
+.dec { background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+.dec .q { font-weight: 700; font-size: var(--step--1); }
+.dec .a { font-size: var(--step--1); color: var(--muted); }
+.dec .a b { color: var(--ink); font-weight: 600; }
+
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.refs { display: grid; gap: 8px; font-size: var(--step--1); }
+.refs .r { display: grid; grid-template-columns: 6rem 1fr; gap: 12px; }
+.refs .r .k { font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted); padding-top: 2px; }
+@media (max-width: 520px) { .refs .r { grid-template-columns: 1fr; gap: 0; } }
+
+.note { font-size: var(--step--1); color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">설계 문서 · v0 · 2026-10-14</span>
+  <h1>직접 만드는 데이터베이스</h1>
+  <p class="lede">RDBMS와 NoSQL 중 무엇을 만들지, 어떤 언어로 어떤 구조로 만들지 정리한 출발점입니다. 이 문서를 기준으로 모듈 설계를 이어갑니다.</p>
+  <div class="meta-row"><span>언어 Kotlin · JVM 21</span><span>외부 의존성 0 (테스트 제외)</span><span>단일 노드 · 단일 프로세스</span></div>
+</header>
+
+<!-- 1. 결론 -->
+<section id="verdict">
+  <div class="head"><span class="eyebrow">결론</span><h2>둘 다 하되, DB를 두 개 만들지 않는다</h2></div>
+  <div class="verdict col">
+    <strong class="big">공통 KV 엔진 하나 위에 문서 모델과 관계형 모델을 각각 얹는 계층형 엔진을 만듭니다.</strong>
+    <p>RDBMS와 NoSQL을 따로 하나씩 만들면 같은 부분(파일 I/O, WAL, 크래시 복구)을 두 번 구현하느라 시간이 가고, 정작 차이가 어디서 오는지는 흐려집니다. 실제 시스템을 보면 둘의 차이는 대부분 <b>저장 엔진 위</b>, 즉 데이터 모델·스키마·쿼리 언어·트랜잭션 범위에 있습니다.</p>
+    <p>저장 구조(B+tree냐 LSM-tree냐)는 그와 별개인 두 번째 축입니다. 그래서 저장 엔진도 같은 KV 인터페이스 뒤에 두 가지를 꽂아 바꿀 수 있게 만듭니다. 이렇게 하면 "관계형이라서 다른 것"과 "B+tree라서 다른 것"을 분리해서 직접 측정할 수 있습니다.</p>
+  </div>
+
+  <div class="stack">
+    <h3>두 축은 독립적이다</h3>
+    <p class="col note">흔히 "RDBMS = B+tree, NoSQL = LSM"으로 묶어 생각하지만 실제 제품은 네 칸에 모두 존재합니다.</p>
+    <div class="matrix-scroll">
+      <div class="matrix" role="table" aria-label="데이터 모델과 저장 구조의 조합">
+        <div class="ax" role="columnheader">모델 ↓ / 저장 →</div>
+        <div class="colh bt" role="columnheader">B+tree (제자리 갱신)</div>
+        <div class="colh ls" role="columnheader">LSM-tree (추가 후 병합)</div>
+        <div class="ax" role="rowheader">관계형 · SQL</div>
+        <div class="cell"><b>MySQL InnoDB, PostgreSQL*</b><span>* PG는 힙 + B-tree 인덱스</span></div>
+        <div class="cell"><b>MyRocks, CockroachDB, TiDB</b><span>SQL 행을 KV로 인코딩해 LSM에 저장</span></div>
+        <div class="ax" role="rowheader">문서 · KV</div>
+        <div class="cell"><b>MongoDB (WiredTiger), BoltDB</b><span>문서 DB도 B-tree가 기본</span></div>
+        <div class="cell"><b>Cassandra, RocksDB, LevelDB</b><span>쓰기 처리량 중심</span></div>
+      </div>
+    </div>
+    <p class="col note">CockroachDB와 TiDB가 바로 이 문서가 택한 구조입니다. SQL 계층이 테이블 행을 정렬된 KV 쌍으로 바꿔 아래 엔진에 맡깁니다.</p>
+  </div>
+</section>
+
+<!-- 2. 언어 -->
+<section id="language">
+  <div class="head"><span class="eyebrow">언어</span><h2>Kotlin으로 만든다</h2></div>
+  <p class="col">이미 익숙한 언어여야 언어가 아니라 DB 개념에 시간을 씁니다. JVM은 <code>FileChannel</code>, <code>force(true)</code>(fsync), <code>ByteBuffer.allocateDirect</code>(오프힙), <code>MappedByteBuffer</code>(mmap)를 표준으로 제공하므로 바이트 단위 페이지 관리에 부족함이 없습니다. Spring은 쓰지 않습니다. 프레임워크가 감추는 부분이 곧 배워야 할 부분이기 때문입니다.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>언어</th><th>장점</th><th>대가</th><th>참고 구현</th></tr></thead>
+      <tbody>
+        <tr class="pick"><td>Kotlin (JVM 21)</td><td>익숙함, 테스트·벤치마크 도구(JUnit 5, JMH) 성숙, sealed class로 AST/플랜 표현이 깔끔</td><td>GC 일시정지가 지연 측정에 섞임, 메모리 레이아웃 직접 제어 불가</td><td>H2, Apache Derby (Java)</td></tr>
+        <tr><td>Go</td><td>참고 자료가 가장 많음, 단순한 문법, goroutine으로 동시성 실험이 쉬움</td><td>새 언어 학습 비용, 제네릭·에러 처리가 장황</td><td>BoltDB, Pebble, <i>Build Your Own Database</i></td></tr>
+        <tr><td>Rust</td><td>메모리·수명 직접 제어, 실제 신규 DB들의 주력 언어</td><td>빌림 검사기와 DB 개념을 동시에 배우게 되어 진도가 크게 느려짐</td><td>mini-lsm, sled, TiKV</td></tr>
+        <tr><td>C / C++</td><td>교재(CMU 15-445 BusTub)와 1:1 대응</td><td>메모리 버그 디버깅에 시간이 새어 나감</td><td>SQLite, RocksDB, BusTub</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col note">Go 자료(Build Your Own Database 등)를 Kotlin으로 옮겨 읽는 것은 어렵지 않습니다. 오히려 그대로 복사할 수 없어서 한 번 더 이해하게 됩니다.</p>
+</section>
+
+<!-- 3. 아키텍처 -->
+<section id="architecture">
+  <div class="head"><span class="eyebrow">아키텍처</span><h2>계층과 갈림길</h2></div>
+  <p class="col">위에서 아래로 요청이 내려갑니다. 갈림길은 두 곳뿐이고, 그 사이를 잇는 <b>KV 인터페이스</b>가 이 설계의 핵심 경계입니다.</p>
+  <div class="layers" aria-label="계층 구조 다이어그램">
+    <div class="layer"><div class="lbl">INTERFACE</div><div class="boxes"><div class="box"><span class="t">REPL / 간단한 TCP 프로토콜</span><span class="d">입력 한 줄 → 결과 출력. 네트워크는 마지막에</span></div></div></div>
+    <div class="layer"><div class="lbl">DATA MODEL</div><div class="boxes two">
+      <div class="box bt"><span class="t">관계형 계층</span><span class="d">catalog · SQL parser · planner · executor(Volcano) · JOIN</span></div>
+      <div class="box ls"><span class="t">문서 계층</span><span class="d">collection · JSON 인코딩 · 필터 쿼리 · 보조 인덱스</span></div>
+    </div></div>
+    <div class="layer"><div class="lbl">TRANSACTION</div><div class="boxes"><div class="box"><span class="t">MVCC (스냅샷 격리)</span><span class="d">key + commitTs 로 버전 관리. 두 모델이 공유</span></div></div></div>
+    <div class="layer"><div class="lbl">KV API</div><div class="boxes"><div class="box seam"><span class="t">KvEngine 인터페이스</span><span class="d">get · put · delete · scan(range) · 정렬된 바이트 키</span></div></div></div>
+    <div class="layer"><div class="lbl">STORAGE</div><div class="boxes two">
+      <div class="box bt"><span class="t">B+tree 엔진</span><span class="d">pager · buffer pool(LRU) · slotted page · split/merge</span></div>
+      <div class="box ls"><span class="t">LSM 엔진</span><span class="d">memtable(skiplist) · SSTable · bloom filter · compaction</span></div>
+    </div></div>
+    <div class="layer"><div class="lbl">DURABILITY</div><div class="boxes"><div class="box"><span class="t">WAL · fsync · 파일 레이아웃</span><span class="d">크래시 후 재시작 시 로그 재생으로 복구</span></div></div></div>
+  </div>
+  <p class="col note">색 구분: <span class="tag bt">청록</span> 관계형 · B+tree 쪽, <span class="tag ls">호박색</span> 문서 · LSM 쪽. 조합은 자유입니다. 문서 계층을 B+tree 위에 올려도 되고, 그게 바로 비교 실험입니다.</p>
+</section>
+
+<!-- 4. 모듈 -->
+<section id="modules">
+  <div class="head"><span class="eyebrow">코드 구조</span><h2>Gradle 멀티모듈</h2></div>
+  <p class="col">모듈 경계 = 계층 경계입니다. 의존 방향은 위에서 아래로만 흐르고, <code>sql</code>과 <code>document</code>는 <code>kv-api</code>만 알 뿐 어느 엔진인지 모릅니다.</p>
+<pre>mydb/
+├── kv-api/          <span class="cm">// KvEngine, Iterator, 바이트 키 비교, 키 인코딩 유틸</span>
+├── storage-common/  <span class="cm">// WAL, 체크섬(CRC32C), 파일 헬퍼, 레코드 직렬화</span>
+├── engine-log/      <span class="cm">// M1: 해시 인덱스 + 추가 전용 로그 (Bitcask형)</span>
+├── engine-lsm/      <span class="cm">// M2: memtable, SSTable, bloom, compaction</span>
+├── engine-btree/    <span class="cm">// M3: pager, buffer pool, B+tree</span>
+├── txn/             <span class="cm">// M7: MVCC, 타임스탬프 발급, 가비지 수집</span>
+├── document/        <span class="cm">// M5: 컬렉션, 문서 인코딩, 필터</span>
+├── sql/             <span class="cm">// M6: lexer, parser, catalog, planner, executor</span>
+├── cli/             <span class="cm">// REPL, 엔진 선택 플래그 --engine=lsm|btree</span>
+└── bench/           <span class="cm">// JMH + 워크로드 생성기, 비교 실험 리포트</span></pre>
+</section>
+
+<!-- 5. 핵심 인터페이스 -->
+<section id="interface">
+  <div class="head"><span class="eyebrow">핵심 경계</span><h2>KvEngine 인터페이스</h2></div>
+  <p class="col">이 인터페이스가 흔들리지 않으면 위아래를 독립적으로 바꿀 수 있습니다. 키는 반드시 <b>바이트 사전순 정렬</b>을 따릅니다. 범위 스캔, SQL 인덱스, 문서 컬렉션 순회가 전부 이 성질 하나에 기대기 때문입니다.</p>
+<pre><span class="kw">interface</span> KvEngine : AutoCloseable {
+    <span class="kw">fun</span> get(key: ByteArray): ByteArray?
+    <span class="kw">fun</span> put(key: ByteArray, value: ByteArray)
+    <span class="kw">fun</span> delete(key: ByteArray)                       <span class="cm">// LSM에선 tombstone, B+tree에선 실제 삭제</span>
+    <span class="kw">fun</span> scan(from: ByteArray, to: ByteArray?): KvIterator  <span class="cm">// [from, to) 정렬 순회</span>
+    <span class="kw">fun</span> writeBatch(ops: List&lt;WriteOp&gt;)              <span class="cm">// 원자적 다중 쓰기 (WAL 한 레코드)</span>
+    <span class="kw">fun</span> flush()                                     <span class="cm">// 내구성 보장 지점 (fsync)</span>
+    <span class="kw">fun</span> stats(): EngineStats                        <span class="cm">// 쓰기/읽기/공간 증폭 측정용</span>
+}
+
+<span class="kw">sealed interface</span> WriteOp {
+    <span class="kw">data class</span> Put(<span class="kw">val</span> key: ByteArray, <span class="kw">val</span> value: ByteArray) : WriteOp
+    <span class="kw">data class</span> Delete(<span class="kw">val</span> key: ByteArray) : WriteOp
+}</pre>
+  <p class="col note"><code>stats()</code>는 처음부터 넣습니다. 비교 실험의 숫자가 전부 여기서 나옵니다(디스크에 쓴 바이트 ÷ 사용자가 쓴 바이트 등).</p>
+</section>
+
+<!-- 6. 데이터 레이아웃 -->
+<section id="layout">
+  <div class="head"><span class="eyebrow">바이트 레이아웃</span><h2>B+tree 페이지와 키 인코딩</h2></div>
+
+  <div class="stack">
+    <h3>4 KiB 슬롯 페이지</h3>
+    <p class="col">B+tree의 노드 하나 = 디스크 페이지 하나입니다. 슬롯 배열은 앞에서 뒤로, 셀(키·값)은 뒤에서 앞으로 자라고, 둘이 만나면 페이지가 가득 찬 것이라 split합니다. SQLite와 PostgreSQL이 같은 방식을 씁니다.</p>
+    <div class="page-scroll">
+      <div class="page-fig" aria-label="4096바이트 슬롯 페이지 레이아웃">
+        <div class="page-bar">
+          <div class="hdr">헤더<br>type · nCells<br>freeStart · rightPtr</div>
+          <div class="slots">슬롯 배열 →<br>u16 오프셋 × n</div>
+          <div class="free">빈 공간</div>
+          <div class="cells">← 셀 영역<br>[keyLen|valLen|key|val]</div>
+        </div>
+        <div class="page-scale"><span>0x000</span><span>0x010</span><span>freeStart</span><span><span>freeEnd</span><span>0xFFF</span></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <h3>모델별 키 인코딩</h3>
+    <p class="col">관계형과 문서 모델의 차이가 바이트 수준에서 드러나는 곳입니다. 관계형은 스키마를 알기 때문에 값을 열 단위로 고정 인코딩하고, 문서는 스키마가 없어서 필드 이름까지 값 안에 넣어야 합니다. 정수는 부호 비트를 뒤집은 빅엔디언으로 저장해야 바이트 정렬이 숫자 정렬과 일치합니다.</p>
+    <div class="kv-list">
+      <div class="kv"><span class="who" style="color:var(--btree)">SQL 행</span><span class="enc"><span class="seg-t">t/00000007/r/</span><span class="seg-k">80000000000002A</span> → <span class="seg-v">[id:int64][name:len+utf8][age:int32]</span></span></div>
+      <div class="kv"><span class="who" style="color:var(--btree)">SQL 인덱스</span><span class="enc"><span class="seg-t">t/00000007/i/02/</span><span class="seg-k">"kim"/80000000000002A</span> → <span class="seg-v">(비어 있음, PK가 키에 포함)</span></span></div>
+      <div class="kv"><span class="who" style="color:var(--lsm)">문서</span><span class="enc"><span class="seg-t">c/00000003/d/</span><span class="seg-k">user-42</span> → <span class="seg-v">{"name":"kim","tags":["a","b"],"addr":{...}}</span></span></div>
+      <div class="kv"><span class="who" style="color:var(--muted)">MVCC 버전</span><span class="enc"><span class="seg-t">&lt;위 키&gt;/</span><span class="seg-k">~commitTs</span> → <span class="seg-v">값 · ~는 비트 반전, 최신 버전이 먼저 오게</span></span></div>
+    </div>
+    <p class="col note">표기는 읽기 쉽게 쓴 것이고 실제로는 구분자 대신 고정 길이 바이너리를 씁니다. <code>0x2A</code> = 42.</p>
+  </div>
+</section>
+
+<!-- 7. 로드맵 -->
+<section id="roadmap">
+  <div class="head"><span class="eyebrow">로드맵</span><h2>마일스톤 순서</h2></div>
+  <p class="col">순서에 의미가 있습니다. 가장 단순한 영속 KV로 시작해 저장 엔진 두 개를 만들고, 한 번 비교한 뒤, 그 위에 모델을 얹고, 다시 비교합니다. 각 단계는 끝날 때 테스트로 증명할 수 있는 완료 조건이 있습니다.</p>
+  <div class="roadmap">
+    <div class="ms">
+      <div class="top"><span class="num">M0</span><h3>바이트와 파일</h3></div>
+      <dl><dt>만드는 것</dt><dd>레코드 직렬화, CRC32C 체크섬, <code>FileChannel</code> 읽기·쓰기, 프로젝트 골격</dd>
+      <dt>배우는 질문</dt><dd><code>write()</code>가 반환되면 디스크에 있는가? <code>force()</code>는 무엇을 보장하는가?</dd>
+      <dt>완료 조건</dt><dd>중간에 잘린 레코드를 체크섬으로 감지해 버림</dd></dl>
+    </div>
+    <div class="ms">
+      <div class="top"><span class="num">M1</span><h3>추가 전용 로그 KV</h3><span class="tag mu">engine-log</span></div>
+      <dl><dt>만드는 것</dt><dd>모든 쓰기를 파일 끝에 추가, 메모리 해시맵이 키 → 오프셋을 기억 (Bitcask)</dd>
+      <dt>배우는 질문</dt><dd>왜 추가 전용이 빠른가? 범위 스캔은 왜 안 되는가? 로그가 무한히 커지면?</dd>
+      <dt>완료 조건</dt><dd>프로세스를 <code>kill -9</code> 후 재시작해도 확정된 쓰기가 모두 남아 있음</dd></dl>
+    </div>
+    <div class="ms ls">
+      <div class="top"><span class="num">M2</span><h3>LSM-tree</h3><span class="tag ls">engine-lsm</span></div>
+      <dl><dt>만드는 것</dt><dd>WAL + memtable(skiplist) → 정렬된 SSTable로 flush, 희소 인덱스, bloom filter, 크기 계층 compaction</dd>
+      <dt>배우는 질문</dt><dd>삭제는 왜 tombstone이어야 하는가? 읽기가 여러 파일을 뒤지는 비용은? compaction이 쓰기를 몇 배로 늘리는가?</dd>
+      <dt>완료 조건</dt><dd>M1의 크래시 테스트 통과 + 범위 스캔 결과가 정렬 순서와 일치</dd></dl>
+    </div>
+    <div class="ms bt">
+      <div class="top"><span class="num">M3</span><h3>B+tree</h3><span class="tag bt">engine-btree</span></div>
+      <dl><dt>만드는 것</dt><dd>pager(페이지 번호 ↔ 파일 오프셋), LRU buffer pool과 dirty 페이지 관리, 슬롯 페이지, 리프 split·병합, 리프 연결 리스트</dd>
+      <dt>배우는 질문</dt><dd>split 도중 크래시가 나면 트리가 어떻게 되는가? 버퍼 풀이 가득 차면 무엇을 내보내는가?</dd>
+      <dt>완료 조건</dt><dd>무작위 100만 건 삽입·삭제 후 트리 불변식(정렬, 높이 균형, 페이지 채움률) 검사 통과</dd></dl>
+    </div>
+    <div class="ms cmp">
+      <div class="top"><span class="num">M4</span><h3>비교 실험 1 · 저장 엔진</h3><span class="tag ac">bench</span></div>
+      <dl><dt>만드는 것</dt><dd>같은 워크로드를 두 엔진에 실행: 쓰기 위주, 읽기 위주, 범위 스캔, 무작위 갱신</dd>
+      <dt>배우는 질문</dt><dd>쓰기 증폭 · 읽기 증폭 · 공간 증폭 중 무엇을 내주고 무엇을 얻는가 (RUM 추측)</dd>
+      <dt>완료 조건</dt><dd>세 가지 증폭 수치를 표로 남기고, 결과를 자료구조로 설명할 수 있음</dd></dl>
+    </div>
+    <div class="ms ls">
+      <div class="top"><span class="num">M5</span><h3>문서 계층 (NoSQL 쪽)</h3><span class="tag ls">document</span></div>
+      <dl><dt>만드는 것</dt><dd>컬렉션 생성, 문서 insert/find/update, 경로 기반 필터(<code>addr.city = "Seoul"</code>), 단일 필드 보조 인덱스</dd>
+      <dt>배우는 질문</dt><dd>스키마가 없으면 무엇이 쉬워지고 무엇을 앱이 떠안는가? 보조 인덱스는 왜 쓰기를 비싸게 만드는가?</dd>
+      <dt>완료 조건</dt><dd>필드 구조가 서로 다른 문서들을 한 컬렉션에서 필터 조회</dd></dl>
+    </div>
+    <div class="ms bt">
+      <div class="top"><span class="num">M6</span><h3>관계형 계층 (RDBMS 쪽)</h3><span class="tag bt">sql</span></div>
+      <dl><dt>만드는 것</dt><dd>catalog(테이블·컬럼·인덱스 메타데이터도 KV에 저장), 재귀 하강 파서, 규칙 기반 planner, Volcano 반복자 executor, nested-loop / index JOIN</dd>
+      <dt>배우는 질문</dt><dd>같은 KV 위인데 스키마가 생기면 무엇이 가능해지는가? 인덱스가 있을 때와 없을 때 플랜은 어떻게 달라지는가?</dd>
+      <dt>완료 조건</dt><dd><code>CREATE TABLE</code>, <code>INSERT</code>, <code>SELECT ... WHERE ... JOIN ... ORDER BY</code>, <code>CREATE INDEX</code> 동작 + <code>EXPLAIN</code> 출력</dd></dl>
+    </div>
+    <div class="ms">
+      <div class="top"><span class="num">M7</span><h3>트랜잭션</h3><span class="tag mu">txn</span></div>
+      <dl><dt>만드는 것</dt><dd>MVCC 스냅샷 격리, 쓰기-쓰기 충돌 감지, 오래된 버전 정리(GC)</dd>
+      <dt>배우는 질문</dt><dd>여러 행을 원자적으로 바꾸는 비용은? 문서 하나 안에 넣으면(임베딩) 트랜잭션이 왜 필요 없어지는가?</dd>
+      <dt>완료 조건</dt><dd>동시 이체 시나리오에서 잔액 합계 보존, write skew 사례를 재현하고 설명</dd></dl>
+    </div>
+    <div class="ms cmp">
+      <div class="top"><span class="num">M8</span><h3>비교 실험 2 · 데이터 모델</h3><span class="tag ac">bench</span></div>
+      <dl><dt>만드는 것</dt><dd>같은 도메인(주문 · 주문항목 · 고객)을 두 모델로 저장하고 아래 실험 수행</dd>
+      <dt>배우는 질문</dt><dd>정규화 + JOIN vs 임베딩, 스키마 변경 비용, 일관성 경계가 어디에 생기는가</dd>
+      <dt>완료 조건</dt><dd>아래 실험표의 관찰을 직접 측정한 숫자로 채움</dd></dl>
+    </div>
+  </div>
+</section>
+
+<!-- 8. 실험 -->
+<section id="experiments">
+  <div class="head"><span class="eyebrow">비교 실험</span><h2>차이를 숫자로 확인하는 방법</h2></div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>실험</th><th>축</th><th>측정</th><th>예상되는 관찰 (검증 대상)</th></tr></thead>
+      <tbody>
+        <tr><td>무작위 키 대량 쓰기</td><td><span class="tag bt">B+tree</span> <span class="tag ls">LSM</span></td><td>처리량, 디스크 쓰기 바이트</td><td>LSM이 순차 쓰기라 처리량이 높지만 compaction으로 총 쓰기 바이트는 늘어남</td></tr>
+        <tr><td>점 조회 (없는 키 포함)</td><td><span class="tag bt">B+tree</span> <span class="tag ls">LSM</span></td><td>조회당 읽은 페이지 수</td><td>bloom filter를 끄면 LSM의 없는 키 조회가 급격히 느려짐</td></tr>
+        <tr><td>같은 키 반복 갱신</td><td><span class="tag bt">B+tree</span> <span class="tag ls">LSM</span></td><td>디스크 사용량 추이</td><td>LSM은 compaction 전까지 공간이 커졌다가 줄어드는 톱니 모양</td></tr>
+        <tr><td>주문 + 항목 조회</td><td><span class="tag bt">관계형</span> <span class="tag ls">문서</span></td><td>KV get 횟수, 지연</td><td>문서 임베딩은 get 1회, 관계형은 JOIN으로 여러 번</td></tr>
+        <tr><td>고객 이름 변경</td><td><span class="tag bt">관계형</span> <span class="tag ls">문서</span></td><td>갱신해야 하는 키 수</td><td>문서에 고객 정보를 복제해 두면 모든 주문 문서를 고쳐야 함</td></tr>
+        <tr><td>컬럼 추가</td><td><span class="tag bt">관계형</span> <span class="tag ls">문서</span></td><td>마이그레이션 시간</td><td>관계형은 catalog 변경 + 기존 행 해석 규칙 필요, 문서는 즉시 가능하지만 읽는 쪽이 두 형태를 처리</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col note">"예상되는 관찰"은 가설입니다. 측정해서 다르게 나오면 그쪽이 더 좋은 학습 거리입니다.</p>
+</section>
+
+<!-- 9. 결정 -->
+<section id="decisions">
+  <div class="head"><span class="eyebrow">설계 착수 전 결정</span><h2>먼저 못 박아 둘 것</h2></div>
+  <p class="col">제안값을 적어 두었습니다. 바꿔도 되지만, 바꾸면 영향받는 마일스톤을 함께 확인합니다.</p>
+  <div class="decisions">
+    <div class="dec"><span class="q">페이지 크기</span><span class="a"><b>4 KiB 고정.</b> OS 페이지와 같아 부분 쓰기(torn write) 논의가 단순해짐</span></div>
+    <div class="dec"><span class="q">동시성</span><span class="a"><b>M6까지 단일 쓰기 스레드.</b> 락 설계는 M7에서 MVCC와 함께</span></div>
+    <div class="dec"><span class="q">내구성 수준</span><span class="a"><b>커밋마다 fsync가 기본</b>, 그룹 커밋은 옵션으로 두고 M4에서 차이 측정</span></div>
+    <div class="dec"><span class="q">SQL 범위</span><span class="a"><b>INT, BIGINT, TEXT, BOOL</b> 4개 타입. NULL 지원, 서브쿼리·집계 함수는 M6 이후</span></div>
+    <div class="dec"><span class="q">문서 인코딩</span><span class="a"><b>처음엔 JSON 텍스트</b>, 이후 길이 접두 바이너리로 바꿔 크기·파싱 비용 비교</span></div>
+    <div class="dec"><span class="q">하지 않을 것</span><span class="a"><b>분산·복제, 비용 기반 옵티마이저, SQL 표준 전체, 와이어 프로토콜 호환</b></span></div>
+  </div>
+</section>
+
+<!-- 10. 참고 -->
+<section id="references">
+  <div class="head"><span class="eyebrow">참고 자료</span><h2>마일스톤별로 읽을 것</h2></div>
+  <div class="refs col">
+    <div class="r"><span class="k">전체</span><span><a href="https://dataintensive.net/">Designing Data-Intensive Applications</a> 3장(저장소와 검색), 7장(트랜잭션). 이 설계의 지도 역할</span></div>
+    <div class="r"><span class="k">M1–M3</span><span>Alex Petrov, <i>Database Internals</i> 1부. B-tree 변형과 LSM을 같은 틀로 비교</span></div>
+    <div class="r"><span class="k">M2</span><span><a href="https://skyzh.github.io/mini-lsm/">mini-lsm</a> (Rust 튜토리얼이지만 단계 구성이 그대로 참고됨)</span></div>
+    <div class="r"><span class="k">M3, M6</span><span><a href="https://15445.courses.cs.cmu.edu/">CMU 15-445</a> 강의 영상. buffer pool, B+tree, 쿼리 실행, 동시성 제어</span></div>
+    <div class="r"><span class="k">M3, M6</span><span><a href="https://build-your-own.org/database/">Build Your Own Database From Scratch</a> (Go). B+tree → KV → 관계형 순서가 이 문서와 같음</span></div>
+    <div class="r"><span class="k">M6</span><span><a href="https://www.sqlite.org/arch.html">SQLite Architecture</a>, <a href="https://www.sqlite.org/fileformat.html">File Format</a>. 슬롯 페이지와 레코드 포맷의 실물</span></div>
+    <div class="r"><span class="k">M6–M7</span><span>CockroachDB 블로그 "SQL in CockroachDB: Mapping Table Data to Key-Value Storage". 행 → KV 인코딩의 실제 사례</span></div>
+  </div>
+</section>
+
+</div>
+
+</html>

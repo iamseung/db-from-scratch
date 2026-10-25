@@ -37,6 +37,8 @@ DURABILITY   storage-common (WAL, fsync)
   - [x] 측정 → [M1 vs M2 결과](docs/measurements/m2-lsm-vs-log.md)
 - [ ] M3 B+tree
   - [x] 상세 설계
+  - [x] 구현 (슬롯 페이지, no-steal 버퍼 풀, split, WAL + doublewrite 체크포인트) + 하네스·돌연변이 검증
+  - [ ] 측정
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)
 - [ ] M5 문서 계층
 - [ ] M6 관계형 계층 (SQL 파서, planner, executor, JOIN)

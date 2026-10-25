@@ -6,5 +6,6 @@ include(
     "storage-common",
     "engine-log",
     "engine-lsm",
+    "engine-btree",
     "bench",
 )

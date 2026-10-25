@@ -32,20 +32,15 @@ M1·M2는 쓰기를 항상 파일 끝에 추가했다. M3는 반대 축이다.
 
 ```
 engine-btree/src/main/kotlin/dev/mydb/engine/btree/
-├── BTreeEngine.kt        // KvEngine 구현, open/복구, 체크포인트
+├── BTreeEngine.kt        // KvEngine 구현, WAL, 체크포인트(doublewrite), 복구, 버퍼 풀 여유 확인
 ├── BTreeOptions.kt       // 설정 + BTreeFaultInjector/BTreeStep
-├── page/
-│   ├── Page.kt           // 바이트 배열 한 장 + 헤더 접근자 + 체크섬
-│   ├── LeafPage.kt       // 슬롯 페이지: 키·값 셀
-│   ├── InternalPage.kt   // 슬롯 페이지: 키·자식 셀 + 가장 오른쪽 자식
-│   └── MetaPage.kt       // 0번 페이지: 루트, 페이지 수, 높이
-├── storage/
-│   ├── Pager.kt          // 페이지 번호 ↔ 파일 오프셋, 읽기·쓰기·할당
-│   ├── BufferPool.kt     // LRU, pin/unpin, dirty, no-steal
-│   └── DoubleWrite.kt    // 체크포인트 페이지 이미지 파일
-├── BTree.kt              // 탐색, 삽입·split, 삭제, 범위 반복자
-└── BTreeVerifier.kt      // 불변식 검사 (테스트·디버깅용, main에 둔다)
+├── Page.kt               // 슬롯 페이지 한 장: 헤더·체크섬, leaf 셀과 internal 셀 연산 (meta도 같은 클래스)
+├── Storage.kt            // Pager(제자리 읽기·쓰기), BufferPool(LRU, no-steal), DoubleWrite
+├── BTree.kt              // 탐색, 삽입·split, 삭제, 범위
+└── BTreeVerifier.kt      // 불변식 검사 → VerifyReport
 ```
+
+> 구현하면서 설계의 파일 구성(LeafPage/InternalPage/MetaPage, page/·storage/ 하위 패키지)을 합쳤다. leaf와 internal은 셀 모양만 다르고 슬롯 관리가 같아서 `Page` 하나가 두 셀 형식을 모두 다룬다.
 
 의존: `api(kv-api)`, `api(storage-common)` — WAL은 M0의 `AppendOnlyFile` + `LogRecordCodec` 그대로, doublewrite 파일도 M0 프레임.
 
@@ -202,13 +197,24 @@ M2와 같은 "디스크(WAL) 먼저, 메모리 나중"이다. 페이지 변경�
 
 doublewrite 파일에 바뀔 페이지 전체가 먼저 확정되어 있으면, 4단계가 어디서 멈췄든 그 페이지들을 다시 덮어써서 "체크포인트 완료" 상태로 만들 수 있다. M1 merge의 footer, M2 MANIFEST 편집과 같은 **commit point 하나로 여러 파일 변경을 원자화**하는 패턴의 세 번째 변형이다.
 
-### 9.4 복구 (open)
+### 9.4 구현하면서 찾은 두 가지 문제
+
+설계 초안에는 없었고 코드를 쓰기 전에 발견했다.
+
+**연산 도중 버퍼 풀이 가득 차는 문제**: split은 새 페이지를 여러 장 잡는다. 도중에 내보낼 깨끗한 프레임이 없으면 트리가 메모리에서 반쯤 바뀐 채로 멈춘다(no-steal이라 디스크로 내보낼 수도 없다). → 연산 **전에** `2 × 높이 + 2`장의 여유가 있는지 확인하고, 없으면 먼저 체크포인트한다(`ensureHeadroom`). 체크포인트 후에도 여유가 없으면 버퍼 풀이 트리 높이에 비해 작은 것이라 예외.
+
+**배치 도중 체크포인트하면 배치 나머지가 사라지는 문제**: 배치 레코드는 이미 옛 WAL에 있다. 배치 중간에 여유가 모자라 체크포인트하면 반쯤 적용된 페이지가 확정되고 옛 WAL은 지워진다. 그 직후 죽으면 배치 나머지가 없다. → 체크포인트가 새 WAL을 만들 때 **진행 중인 레코드(carry)를 먼저 새 WAL에 쓰고 sync**한 뒤 옛 WAL을 지운다. 재생이 멱등이라 배치 전체를 다시 적용해도 결과가 같다.
+
+같은 이유로 **복구 중 WAL 재생 때의 체크포인트는 WAL을 바꾸거나 지우지 않는다**(`replaying`). 재생이 끝난 뒤 한 번 더 체크포인트하고 그때 옛 WAL을 지운다.
+
+### 9.5 복구 (open)
 
 ```
 1. LOCK
 2. doublewrite 파일이 있고 footer가 온전하면 → 안의 페이지를 전부 DB 파일에 다시 쓰고 sync (멱등)
    footer가 없거나 깨졌으면 → 체크포인트는 일어나지 않은 것, doublewrite 삭제
 3. meta 페이지 읽기 → 루트, 페이지 수
+   (체크섬 검사 전에 파일에 기록된 pageSize를 먼저 확인한다. 설정과 다른 크기로 읽으면 체크섬부터 틀려 "손상"으로 보이기 때문 — 테스트에서 발견)
 4. 남은 WAL 전부를 번호 순으로 재생 (트리에 put/delete 적용)
 5. 재생한 내용이 있으면 체크포인트 (WAL 하나 = 체크포인트 구간 하나 유지)
 ```
@@ -249,6 +255,15 @@ LSM은 무작위 쓰기를 순차 쓰기로 바꿔 이 차이를 줄이는 구�
 
 로드맵 M3 완료 조건 "무작위 100만 건 삽입·삭제 후 불변식 검사 통과"는 채움률 항목을 삽입 전용 단계에만 적용한다(§2 merge 결정).
 
+**관찰된 리프 채움률** (페이지 512 B, 키 2만 개):
+
+| 삽입 순서 | 평균 | 최소 | 해석 |
+|---|---:|---:|---|
+| 순차 | 0.51 | 0.49 | 오른쪽 끝에서만 split이 일어나 왼쪽 절반이 영원히 반만 찬다. 실제 DB가 "가장 오른쪽 리프는 비대칭 split"을 하는 이유 |
+| 역순 | 0.54 | 0.52 | 같은 현상의 거울상 |
+| 무작위 | **0.69** | 0.50 | B-tree 이론값 ln 2 ≈ 0.693 (Yao, 1978)과 일치 |
+| 1/3 삭제 후 | 0.36 | 0.33 | merge가 없어 지운 만큼 그대로 빈다 (§2 결정의 대가) |
+
 ### 11.3 공통 하네스
 
 - `KvEngineContractTest` 2종: 기본, 그리고 페이지 512 B·버퍼 풀 8장(split과 체크포인트가 쉴 새 없이 일어남).
@@ -259,15 +274,22 @@ LSM은 무작위 쓰기를 순차 쓰기로 바꿔 이 차이를 줄이는 구�
 
 - FaultInjector: `DW_SYNCED`, `PAGE_WRITTEN`(첫 장, 중간 장), `CHECKPOINT_DONE` 각각에서 크래시 → 재시작 후 모델과 동일, 불변식 통과.
 - torn page: DB 파일의 페이지 한 장 중간을 덮어써 체크섬을 깨고, 같은 페이지가 doublewrite에 있으면 복구됨 / 없으면 `CorruptionException`.
-- 돌연변이 검증: (a) doublewrite 생략 후 제자리 쓰기 중 크래시, (b) no-steal 위반(더러운 페이지 방출 허용), (c) split 시 링크 미갱신 — 각각 어느 테스트가 잡는지 기록.
+- 돌연변이 검증 (2026-10-25 실행):
+
+| 넣은 버그 | 잡은 테스트 |
+|---|---|
+| (a) doublewrite 생략 | 1개 — "찢어진 페이지는 doublewrite로 복구된다"만. 체크포인트 크래시 지점 테스트는 못 잡았다. 제자리에 일부만 쓰인 페이지 조합이 우연히 서로 맞는 경우가 많기 때문으로 보인다(원인 미확인). 검증이 얇은 지점 |
+| (b) no-steal 위반 (더러운 페이지를 써서 내보냄) | 3개 — 무작위, 버퍼 풀보다 큰 배치, BufferPoolTest. 크래시가 없어도 실패한다: 내보낸 페이지가 체크포인트 대상에서 빠지고, 재시작 때 디스크에 "체크포인트 이후 페이지"와 "체크포인트 시점 페이지"가 섞인다 |
+| (c) split 시 리프 링크 미갱신 | 10개 — 불변식 검사·범위 스캔이 있는 거의 모든 테스트 |
+| (d) carry 누락 | 7개 — 크래시 3종, 무작위, 큰 배치, 체크포인트 크래시 지점, 찢어진 페이지. 배치뿐 아니라 단일 put도 WAL 기록 **뒤에** 여유 확인·체크포인트를 하므로 put 하나가 사라진다 |
 
 ## 12. 설정
 
 ```kotlin
 data class BTreeOptions(
     val dataDir: Path,
-    val pageSize: Int = 4096,                 // 512의 배수, 512 ~ 65536
-    val bufferPoolPages: Int = 1024,          // 4 MiB
+    val pageSize: Int = 4096,                 // 512 ~ 32768의 2의 거듭제곱 (헤더 u16에 페이지 안 오프셋이 들어가야 함)
+    val bufferPoolPages: Int = 1024,          // 4 MiB, 최소 16
     val checkpointWalBytes: Long = 16L * 1024 * 1024,
     val syncPolicy: SyncPolicy = SyncPolicy.EVERY_WRITE,
     val recoveryMode: RecoveryMode = RecoveryMode.TOLERATE_TAIL,

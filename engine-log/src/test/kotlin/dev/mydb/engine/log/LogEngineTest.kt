@@ -147,6 +147,23 @@ class LogEngineTest {
         }
     }
 
+    /** 회귀 (M5 측정에서 발견): 큰 배치의 키들을 읽을 때 키마다 프레임 전체를 다시 읽으면 안 된다. */
+    @Test
+    fun `큰 배치의 키를 차례로 읽어도 프레임은 한 번만 읽는다`() {
+        open().use { engine ->
+            engine.writeBatch(List(1_000) { WriteOp.Put(b("k-%04d".format(it)), ByteArray(100)) })
+            val frameSize = engine.stats().diskBytesUsed
+            val before = engine.stats().diskBytesRead
+
+            val values = engine.scan(ByteArray(0), null).use { iterator -> iterator.asSequence().map { it.value }.toList() }
+
+            assertEquals(1_000, values.size)
+            assertTrue(engine.stats().diskBytesRead - before <= frameSize * 2, "읽은 바이트 ${engine.stats().diskBytesRead - before}, 프레임 $frameSize")
+            values[0][0] = 9
+            assertEquals(0, engine.get(b("k-0000"))!![0], "캐시된 값을 호출자가 고칠 수 없어야 한다")
+        }
+    }
+
     @Test
     fun `디스크 사용량은 세그먼트 파일 크기의 합이다`() {
         open(segmentSize = 1).use { engine ->

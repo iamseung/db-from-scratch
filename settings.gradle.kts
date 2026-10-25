@@ -7,5 +7,7 @@ include(
     "engine-log",
     "engine-lsm",
     "engine-btree",
+    "document",
+    "sql",
     "bench",
 )

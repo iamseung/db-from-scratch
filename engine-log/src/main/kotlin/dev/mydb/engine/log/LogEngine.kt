@@ -44,6 +44,13 @@ class LogEngine private constructor(
     private var userBytesWritten = 0L
     private var closed = false
 
+    /**
+     * 마지막으로 디코딩한 배치 프레임 ((세그먼트, offset) → 배치).
+     * 배치의 키 하나를 읽으려면 프레임 전체를 읽고 CRC를 검사해 디코딩해야 해서, 큰 배치(예: 인덱스 생성 5만 건)의 키를
+     * 차례로 읽으면 키마다 프레임 전체를 다시 처리했다 (M5 측정에서 발견). merge가 세그먼트를 바꾸면 비운다.
+     */
+    private var cachedBatch: Pair<Pair<Int, Long>, LogRecord.Batch>? = null
+
     @Synchronized
     override fun get(key: ByteArray): ByteArray? {
         checkOpen()
@@ -111,6 +118,7 @@ class LogEngine private constructor(
         checkOpen()
         val targets = segments.headMap(activeId).keys.toList()
         if (targets.isEmpty()) return MergeResult(emptyList(), 0, 0, 0)
+        cachedBatch = null
         val mergedId = targets.last()
         val bytesBefore = targets.sumOf { segments.getValue(it).size }
         val fault = options.faultInjector
@@ -191,16 +199,30 @@ class LogEngine private constructor(
     }
 
     private fun readValue(location: Location): ByteArray {
+        if (location.indexInBatch >= 0) {
+            val cached = cachedBatch
+            val batch = if (cached != null && cached.first == location.segmentId to location.frameOffset) {
+                cached.second
+            } else {
+                (readRecord(location) as? LogRecord.Batch)?.also { cachedBatch = (location.segmentId to location.frameOffset) to it }
+            }
+            val target = batch?.ops?.getOrNull(location.indexInBatch)
+            // 캐시된 배열을 호출자가 고치지 못하게 복사한다
+            return (target as? LogRecord.Put)?.value?.copyOf()
+                ?: throw CorruptionException("keydir 위치에 PUT 레코드가 없습니다: $location → $target")
+        }
+        return (readRecord(location) as? LogRecord.Put)?.value
+            ?: throw CorruptionException("keydir 위치에 PUT 레코드가 없습니다: $location")
+    }
+
+    private fun readRecord(location: Location): LogRecord {
         val segment = segments[location.segmentId]
             ?: throw CorruptionException("keydir가 없는 세그먼트를 가리킵니다: $location")
         val result = segment.readFrame(location.frameOffset)
         if (result !is FrameReadResult.Ok) {
             throw CorruptionException("keydir가 가리키는 프레임을 읽을 수 없습니다: $location → $result")
         }
-        val record = LogRecordCodec.decode(result.payload)
-        val target = if (location.indexInBatch < 0) record else (record as? LogRecord.Batch)?.ops?.getOrNull(location.indexInBatch)
-        return (target as? LogRecord.Put)?.value
-            ?: throw CorruptionException("keydir 위치에 PUT 레코드가 없습니다: $location → $target")
+        return LogRecordCodec.decode(result.payload)
     }
 
     private fun BatchableRecord.userBytes(): Long = when (this) {

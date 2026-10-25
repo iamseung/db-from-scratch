@@ -17,12 +17,12 @@ import kotlin.system.measureNanoTime
  * M4 비교 실험 (docs/detailed/m4-engine-comparison.md). 실행: ./gradlew :bench:run --args=m4
  * 기본 비교 표(--args=compare)가 답하지 못하는 네 가지: 무작위 순서 적재, 공간 증폭 시계열, 그룹 커밋, 읽기 증폭.
  */
-fun runEngineExperiments() {
+fun runEngineExperiments(only: String? = null) {
     println("# M4 저장 엔진 비교 실험\n")
-    randomOrderLoad()
-    spaceOverTime()
-    groupCommit()
-    readAmplification()
+    if (only == null || only == "e1") randomOrderLoad()
+    if (only == null || only == "e2") spaceOverTime()
+    if (only == null || only == "e3") groupCommit()
+    if (only == null || only == "e4") readAmplification()
 }
 
 private class Kind(val name: String, val open: (Path, SyncPolicy) -> KvEngine)
@@ -74,7 +74,14 @@ private fun spaceOverTime() {
     println("## E2. 공간 증폭 시계열 (키 1만 개 × 20회 덮어쓰기, 1만 회마다 기록)\n")
     val live = 10_000L * (14 + 100)
     println("살아 있는 데이터 ≈ ${mib(live)}. 표의 값은 공간 증폭 = 디스크 사용량 ÷ 살아 있는 데이터.\n")
-    val variants = KINDS.map { kind -> Triple(kind.name, kind, false) } + Triple("M1 Log (5만 회마다 merge)", KINDS[0], true)
+    // Log는 세그먼트 1 MiB로 연다. 64 MiB면 23 MiB 전체가 활성 세그먼트에 있어 merge할 대상이 없다 (첫 측정의 실수)
+    val smallSegmentLog = Kind("M1 Log") { dir, policy -> LogEngine.open(LogEngineOptions(dir, 1L * 1024 * 1024, policy)) }
+    val variants = listOf(
+        Triple("M1 Log (세그먼트 1 MiB)", smallSegmentLog, false),
+        Triple("M1 Log (세그먼트 1 MiB, 5만 회마다 merge)", smallSegmentLog, true),
+        Triple("M2 LSM", KINDS[1], false),
+        Triple("M3 B+tree", KINDS[2], false),
+    )
     val header = (1..20).joinToString(" | ") { "${it}만" }
     println("| 엔진 | $header |")
     println("|---|" + "---:|".repeat(20))

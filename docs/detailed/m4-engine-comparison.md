@@ -70,3 +70,9 @@ EVERY_WRITE, 총 5,000건을 배치 크기 1 / 10 / 100으로 나눠 writeBatch
 ## 4. 완료 조건 (로드맵 M4)
 
 세 가지 증폭(읽기 · 쓰기 · 공간)을 세 엔진에 대해 표로 남기고, 각 수치를 자료구조로 설명할 수 있다. 예상과 다른 값은 원인을 찾아 기록한다(못 찾으면 "미확인"으로).
+
+## 5. 결과
+
+[docs/measurements/m4-engine-comparison.md](../measurements/m4-engine-comparison.md). 7개 확인 항목 중 5개 적중.
+- 틀린 예상: E2에서 B+tree 공간이 "거의 평평"하다고 봤으나 WAL(체크포인트 전까지 최대 16 MiB)을 빠뜨려 톱니가 나왔다.
+- 실험 설계 오류: E2의 Log merge 변형을 세그먼트 64 MiB로 열어 merge할 대상이 없었다. 세그먼트 1 MiB로 다시 쟀다.

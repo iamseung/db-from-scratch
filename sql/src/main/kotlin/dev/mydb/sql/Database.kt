@@ -29,6 +29,7 @@ class Database(private val engine: KvEngine) {
         is Statement.Update -> update(statement)
         is Statement.Delete -> delete(statement)
         is Statement.Explain -> Result.Plan(planSelect(statement.select).first.explain().trimEnd())
+        is Statement.AlterAddColumn -> alterAddColumn(statement)
     }
 
     /** 편의: SELECT 결과 행만. */
@@ -58,6 +59,25 @@ class Database(private val engine: KvEngine) {
         SeqScan(engine, table, table.name).rows().forEach { ops += WriteOp.Put(updated.indexKey(index, it), ByteArray(0)) }
         engine.writeBatch(ops)
         return Result.Ok
+    }
+
+    /**
+     * 행 인코딩은 "스키마 열 순서대로 값만"이라 열이 늘면 기존 행을 새 스키마로 읽을 수 없다.
+     * 그래서 모든 행을 새 형식으로 다시 쓴다 (카탈로그 변경과 한 배치, 원자적). 비용은 행 수에 비례한다 (M8 D3).
+     * 돌려주는 값은 다시 쓴 행 수.
+     */
+    private fun alterAddColumn(s: Statement.AlterAddColumn): Result {
+        val table = catalog.require(s.table)
+        if (table.columnIndex(s.column.name) != null) throw SqlException("이미 있는 열입니다: ${s.table}.${s.column.name}")
+        val updated = TableDef(table.id, table.name, table.columns + s.column, table.indexes)
+        val ops = catalog.saveOps(updated, catalog.nextId()).toMutableList()
+        var rewritten = 0
+        SeqScan(engine, table, table.name).rows().forEach { row ->
+            ops += WriteOp.Put(updated.rowKey(row[table.pk]), RowCodec.encode(updated.types, row + Value.Null))
+            rewritten++
+        }
+        engine.writeBatch(ops)
+        return Result.Affected(rewritten)
     }
 
     private fun insert(s: Statement.Insert): Result {

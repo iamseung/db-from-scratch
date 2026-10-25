@@ -20,8 +20,9 @@
 | 한다 | 하지 않는다 (이유) |
 |---|---|
 | 타입 `INT`(64비트), `TEXT`, `BOOL`, `NULL` | 실수·날짜, 타입 변환 규칙 |
+| `ALTER TABLE ADD COLUMN` (M8에서 추가, 모든 행 재작성) | `DROP`, 열 삭제·변경 |
 | 단일 열 기본 키(INT 또는 TEXT), `NOT NULL` | 복합 기본 키, 외래 키, CHECK |
-| `CREATE TABLE`, `CREATE INDEX`(단일 열), `INSERT`(여러 행), `SELECT`, `UPDATE`, `DELETE`, `EXPLAIN` | `ALTER TABLE` (M8에서 스키마 변경 비용 실험 때), `DROP` |
+| `CREATE TABLE`, `CREATE INDEX`(단일 열), `INSERT`(여러 행), `SELECT`, `UPDATE`, `DELETE`, `EXPLAIN` | |
 | `WHERE`: 비교 6종, `AND`/`OR`/`NOT`, `IS [NOT] NULL`, 산술 `+ - *` | 서브쿼리, `IN`, `LIKE`, 집계 함수, `GROUP BY` |
 | 두 테이블 `JOIN … ON a = b` (내부 조인) | 3개 이상 조인 순서 최적화, 외부 조인 |
 | `ORDER BY` 한 열, `LIMIT` | |

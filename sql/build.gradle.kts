@@ -8,6 +8,9 @@ dependencies {
     "implementation"(project(":engine-log"))
     "implementation"(project(":engine-lsm"))
     "implementation"(project(":engine-btree"))
+
+    // M8 D5: 관계형과 문서형의 일관성 경계 비교 테스트
+    "testImplementation"(project(":document"))
 }
 
 application {

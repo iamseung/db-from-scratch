@@ -141,6 +141,19 @@ abstract class SqlContractTest {
     }
 
     @Test
+    fun `ALTER TABLE ADD COLUMN은 기존 행을 NULL로 채워 다시 쓰고 인덱스는 그대로다`() = withDb { db ->
+        db.seedShop()
+        db.execute("CREATE INDEX idx_city ON users (city)")
+        assertEquals(Result.Affected(4), db.execute("ALTER TABLE users ADD COLUMN email TEXT"))
+        db.execute("INSERT INTO users VALUES (5, 'jung', 'Seoul', 22, 'j@x')")
+
+        assertEquals(listOf(listOf(i(1), Value.Null), listOf(i(5), t("j@x"))), db.query("SELECT id, email FROM users WHERE city = 'Seoul' AND id != 4 ORDER BY id"))
+        assertEquals(listOf(listOf(i(5))), db.query("SELECT id FROM users WHERE email IS NOT NULL"))
+        assertFailsWith<SqlException> { db.execute("ALTER TABLE users ADD COLUMN email TEXT") }
+        assertFailsWith<SqlException> { db.execute("ALTER TABLE users ADD COLUMN x FLOAT") }
+    }
+
+    @Test
     fun `재오픈 후 스키마·데이터·인덱스가 남는다`() {
         withDb { db ->
             db.seedShop()

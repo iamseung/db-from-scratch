@@ -75,6 +75,9 @@ sealed interface Statement {
     data class Delete(val table: String, val where: Expr?) : Statement
 
     data class Explain(val select: Select) : Statement
+
+    /** NULL 허용 열만 추가한다 (기존 행은 NULL). */
+    data class AlterAddColumn(val table: String, val column: ColumnDef) : Statement
 }
 
 // ---------- 렉서 ----------
@@ -88,6 +91,7 @@ object Lexer {
         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "IS", "TRUE", "FALSE", "INSERT", "INTO", "VALUES",
         "CREATE", "TABLE", "INDEX", "ON", "PRIMARY", "KEY", "INT", "INTEGER", "BIGINT", "TEXT", "BOOL", "BOOLEAN",
         "UPDATE", "SET", "DELETE", "JOIN", "INNER", "ORDER", "BY", "ASC", "DESC", "LIMIT", "EXPLAIN", "AS",
+        "ALTER", "ADD", "COLUMN",
     )
 
     fun tokenize(sql: String): List<Token> {
@@ -170,7 +174,8 @@ class Parser private constructor(private val tokens: List<Token>) {
         acceptKeyword("UPDATE") -> update()
         acceptKeyword("DELETE") -> delete()
         acceptKeyword("EXPLAIN") -> { expectKeyword("SELECT"); Statement.Explain(select()) }
-        else -> fail("문장이 필요합니다 (SELECT, INSERT, UPDATE, DELETE, CREATE, EXPLAIN)")
+        acceptKeyword("ALTER") -> alterTable()
+        else -> fail("문장이 필요합니다 (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, EXPLAIN)")
     }
 
     private fun createTable(): Statement.CreateTable {
@@ -179,12 +184,7 @@ class Parser private constructor(private val tokens: List<Token>) {
         val columns = ArrayList<ColumnDef>()
         do {
             val column = ident()
-            val type = when (expect(TokenType.KEYWORD).text) {
-                "INT", "INTEGER", "BIGINT" -> SqlType.INT
-                "TEXT" -> SqlType.TEXT
-                "BOOL", "BOOLEAN" -> SqlType.BOOL
-                else -> fail("타입이 필요합니다 (INT, TEXT, BOOL)", back = 1)
-            }
+            val type = type()
             var notNull = false
             var primaryKey = false
             while (true) {
@@ -198,6 +198,25 @@ class Parser private constructor(private val tokens: List<Token>) {
         } while (accept(TokenType.SYMBOL, ","))
         expectSymbol(")")
         return Statement.CreateTable(name, columns)
+    }
+
+    private fun type(): SqlType {
+        if (peek().type != TokenType.KEYWORD) fail("타입이 필요합니다 (INT, TEXT, BOOL)")
+        return when (expect(TokenType.KEYWORD).text) {
+            "INT", "INTEGER", "BIGINT" -> SqlType.INT
+            "TEXT" -> SqlType.TEXT
+            "BOOL", "BOOLEAN" -> SqlType.BOOL
+            else -> fail("타입이 필요합니다 (INT, TEXT, BOOL)", back = 1)
+        }
+    }
+
+    private fun alterTable(): Statement.AlterAddColumn {
+        expectKeyword("TABLE")
+        val table = ident()
+        expectKeyword("ADD")
+        acceptKeyword("COLUMN")
+        val column = ident()
+        return Statement.AlterAddColumn(table, ColumnDef(column, type(), notNull = false, primaryKey = false))
     }
 
     private fun createIndex(): Statement.CreateIndex {

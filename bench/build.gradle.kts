@@ -8,6 +8,7 @@ dependencies {
     "implementation"(project(":engine-btree"))
     "implementation"(project(":document"))
     "implementation"(project(":txn"))
+    "implementation"(project(":sql"))
 }
 
 application {

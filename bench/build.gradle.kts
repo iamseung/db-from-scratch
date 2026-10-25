@@ -7,6 +7,7 @@ dependencies {
     "implementation"(project(":engine-lsm"))
     "implementation"(project(":engine-btree"))
     "implementation"(project(":document"))
+    "implementation"(project(":txn"))
 }
 
 application {

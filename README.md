@@ -7,7 +7,7 @@ RDBMS와 NoSQL의 차이를 직접 만들어 보며 이해하기 위한 학습�
 이렇게 해서 "관계형이라서 생기는 차이"와 "저장 구조 때문에 생기는 차이"를 따로 측정합니다.
 
 - 설계 문서: [`docs/design.html`](docs/design.html)
-- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md) · [M2 engine-lsm](docs/detailed/m2-engine-lsm.md) · [M3 engine-btree](docs/detailed/m3-engine-btree.md) · [M4 비교 실험](docs/detailed/m4-engine-comparison.md) · [M5 document](docs/detailed/m5-document.md) · [M6 sql](docs/detailed/m6-sql.md)
+- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md) · [M2 engine-lsm](docs/detailed/m2-engine-lsm.md) · [M3 engine-btree](docs/detailed/m3-engine-btree.md) · [M4 비교 실험](docs/detailed/m4-engine-comparison.md) · [M5 document](docs/detailed/m5-document.md) · [M6 sql](docs/detailed/m6-sql.md) · [M7 txn](docs/detailed/m7-transactions.md)
 - 언어: Kotlin (JVM 21), Spring 등 프레임워크 없이, 외부 의존성은 테스트용만
 
 ## 구조
@@ -42,7 +42,7 @@ DURABILITY   storage-common (WAL, fsync)
 - [x] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭) → [RUM 정리](docs/measurements/m4-engine-comparison.md)
 - [x] M5 문서 계층 (JSON 컬렉션, 경로 필터, 보조 인덱스, explain) → [측정](docs/measurements/m5-document.md)
 - [x] M6 관계형 계층 (SQL 파서, 규칙 기반 planner, Volcano executor, JOIN, EXPLAIN, REPL)
-- [ ] M7 트랜잭션 (MVCC 스냅샷 격리)
+- [x] M7 트랜잭션 (MVCC 스냅샷 격리, write skew 재현, GC) → [측정](docs/measurements/m7-transactions.md)
 - [ ] M8 비교 실험 2: 데이터 모델
 
 ## 빌드
@@ -65,4 +65,5 @@ DURABILITY   storage-common (WAL, fsync)
 ./gradlew :bench:run --args=compare   # M1 · M2 · M3 비교
 ./gradlew :bench:run --args=m4        # 저장 엔진 비교 실험
 ./gradlew :bench:run --args=m5        # 문서 계층
+./gradlew :bench:run --args=m7        # 트랜잭션
 ```

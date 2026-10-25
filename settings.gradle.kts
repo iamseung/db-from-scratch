@@ -9,5 +9,6 @@ include(
     "engine-btree",
     "document",
     "sql",
+    "txn",
     "bench",
 )

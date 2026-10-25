@@ -299,7 +299,7 @@ process.destroyForcibly()  (SIGKILL)
 
 ## 12. 측정해서 기록할 것 (M4 준비)
 
-결과: [docs/measurements/m1-log-engine.md](../measurements/m1-log-engine.md). EVERY_WRITE는 macOS에서 건당 약 3.9 ms라 100만 건 대신 1만 건으로 쟀다.
+결과: [docs/measurements/m1-log-engine.md](../measurements/m1-log-engine.md) (재현: `./gradlew :bench:run --args=m1`). EVERY_WRITE는 macOS에서 건당 약 3.9 ms라 100만 건 대신 1만 건으로 쟀다.
 
 | 항목 | 방법 |
 |---|---|

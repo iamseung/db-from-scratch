@@ -440,9 +440,11 @@ data class LsmOptions(
 
 ## 15. 측정 (M1과 같은 표로 비교, M4 준비)
 
+결과: [docs/measurements/m2-lsm-vs-log.md](../measurements/m2-lsm-vs-log.md). 6개 예상 중 5개 적중, put 처리량 1개 틀림.
+
 | 항목 | 예상 (검증 대상) |
 |---|---|
-| put 처리량 MANUAL | M1과 비슷하거나 약간 낮음 (memtable 삽입 비용 + 주기적 flush) |
+| put 처리량 MANUAL | ~~M1과 비슷하거나 약간 낮음~~ → **실측 3.5배 낮음**. 동기 compaction이 디스크 쓰기를 4.6배로 늘린 비용을 빠뜨렸다 ([측정](../measurements/m2-lsm-vs-log.md) §1) |
 | 쓰기 증폭 | 약 5 (§9.3 계산) — M1의 1.2보다 높음 |
 | scan 100건, 키 100만 | 블록 몇 개 읽기 → M1의 16 ms보다 크게 낮음 |
 | 없는 키 get, bloom 켬/끔 | bloom 없으면 테이블 수만큼 블록 읽기 |
@@ -459,4 +461,4 @@ data class LsmOptions(
 6. ✅ 복구 (§11) → 크래시 테스트
 7. ✅ `SizeTieredPicker` + compaction(`LsmEngine.runCompaction`) + Version 참조 카운트
 8. ✅ FaultInjector 테스트, 무작위 테스트, 크래시 테스트 (flush·compaction 구간)
-9. 측정 (§15)
+9. ✅ 측정 (§15)

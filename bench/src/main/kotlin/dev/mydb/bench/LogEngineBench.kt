@@ -3,19 +3,15 @@ package dev.mydb.bench
 import dev.mydb.engine.log.LogEngine
 import dev.mydb.engine.log.LogEngineOptions
 import dev.mydb.storage.SyncPolicy
-import java.nio.file.Files
-import java.nio.file.Path
-import kotlin.io.path.ExperimentalPathApi
-import kotlin.io.path.deleteRecursively
 import kotlin.system.measureNanoTime
 
 /**
  * M1 측정 (docs/detailed/m1-engine-log.md §12). 결과를 Markdown 표로 출력한다.
- * 실행: ./gradlew :bench:run
+ * 실행: ./gradlew :bench:run --args=m1
  *
  * 디스크 I/O가 지배하는 초 단위 작업이라 JMH 대신 직접 시간을 잰다. 처리량은 3회 측정해 중앙값을 쓴다.
  */
-fun main() {
+fun runM1Bench() {
     println("# M1 LogEngine 측정\n")
     putThroughput()
     writeAmplification()
@@ -130,32 +126,5 @@ private fun heapPerKey() {
 private val VALUE_100 = ByteArray(100) { 'v'.code.toByte() }
 private val VALUE_1K = ByteArray(1024) { 'v'.code.toByte() }
 
-/** 0 채움이라 바이트 순서 = 번호 순서. 14 B. */
-private fun key(n: Int) = "key-%010d".format(n).toByteArray()
-
 private fun value(round: Int) = ByteArray(100) { ('a' + round).code.toByte() }
 
-private fun usedHeapAfterGc(): Long {
-    repeat(3) {
-        System.gc()
-        Thread.sleep(200)
-    }
-    val runtime = Runtime.getRuntime()
-    return runtime.totalMemory() - runtime.freeMemory()
-}
-
-@OptIn(ExperimentalPathApi::class)
-private fun <T> withTempDir(block: (Path) -> T): T {
-    val dir = Files.createTempDirectory("mydb-bench")
-    try {
-        return block(dir)
-    } finally {
-        dir.deleteRecursively()
-    }
-}
-
-private fun fmt(n: Number) = "%,d".format(n)
-
-private fun mib(bytes: Long) = "%.1f MiB".format(bytes / 1024.0 / 1024.0)
-
-private fun ms(nanos: Long) = "%.3f ms".format(nanos / 1e6)

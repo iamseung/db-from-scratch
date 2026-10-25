@@ -1,6 +1,6 @@
 # M1 LogEngine 측정 결과
 
-> 측정일 2026-10-14 · 브랜치 `feature/m1-measurements` · 재현: `./gradlew :bench:run` (약 2분 20초)
+> 측정일 2026-10-14 · 브랜치 `feature/m1-measurements` · 재현: `./gradlew :bench:run --args=m1` (약 2분 20초)
 > 측정 코드: [`bench/src/main/kotlin/dev/mydb/bench/LogEngineBench.kt`](../../bench/src/main/kotlin/dev/mydb/bench/LogEngineBench.kt)
 
 ## 환경

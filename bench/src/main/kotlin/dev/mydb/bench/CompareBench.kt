@@ -1,5 +1,7 @@
 package dev.mydb.bench
 
+import dev.mydb.engine.btree.BTreeEngine
+import dev.mydb.engine.btree.BTreeOptions
 import dev.mydb.engine.log.LogEngine
 import dev.mydb.engine.log.LogEngineOptions
 import dev.mydb.engine.lsm.LsmEngine
@@ -7,14 +9,16 @@ import dev.mydb.engine.lsm.LsmOptions
 import dev.mydb.kv.KvEngine
 import dev.mydb.storage.SyncPolicy
 import java.nio.file.Path
+import kotlin.random.Random
 import kotlin.system.measureNanoTime
 
 /**
- * M1 LogEngine과 M2 LsmEngine을 같은 시나리오로 잰다 (docs/detailed/m2-engine-lsm.md §15).
- * 두 엔진 모두 기본 설정: Log 세그먼트 64 MiB / LSM memtable 1 MiB, 블록 4 KiB, bloom 10 bits/key, size-tiered 4개.
+ * M1 Log · M2 LSM · M3 B+tree를 같은 시나리오로 잰다 (m2 설계 §15, m3 설계 §13).
+ * 모두 기본 설정: Log 세그먼트 64 MiB / LSM memtable 1 MiB, 블록 4 KiB, bloom 10 bits/key, size-tiered 4개 /
+ * B+tree 페이지 4 KiB, 버퍼 풀 1024장(4 MiB), 체크포인트 WAL 16 MiB.
  */
 fun runCompareBench() {
-    println("# M1 LogEngine vs M2 LsmEngine\n")
+    println("# M1 Log vs M2 LSM vs M3 B+tree\n")
     putThroughput()
     writeAmplification()
     restartTime()
@@ -28,10 +32,12 @@ private class Bench(val name: String, val open: (Path, SyncPolicy) -> KvEngine)
 private val ENGINES = listOf(
     Bench("M1 Log") { dir, policy -> LogEngine.open(LogEngineOptions(dir, 64L * 1024 * 1024, policy)) },
     Bench("M2 LSM") { dir, policy -> LsmEngine.open(LsmOptions(dir, syncPolicy = policy)) },
+    Bench("M3 B+tree") { dir, policy -> BTreeEngine.open(BTreeOptions(dir, syncPolicy = policy)) },
 )
 
 private val VALUE_100 = ByteArray(100) { 'v'.code.toByte() }
-private val VALUE_1K = ByteArray(1024) { 'v'.code.toByte() }
+/** B+tree 셀 상한(4 KiB 페이지 1,014 B - 키 14 B)에 맞춰 1,000 B. */
+private val VALUE_1K = ByteArray(1000) { 'v'.code.toByte() }
 
 private fun KvEngine.load(count: Int, value: ByteArray = VALUE_100) = repeat(count) { put(key(it), value) }
 
@@ -72,8 +78,20 @@ private fun writeAmplification() {
                 row(bench, "키 1만 × 10회 덮어쓰기", engine)
             }
         }
+        withTempDir { dir ->
+            bench.open(dir, SyncPolicy.MANUAL).use { engine ->
+                engine.load(100_000)
+                val before = engine.stats()
+                val random = Random(42)
+                repeat(100_000) { engine.put(key(random.nextInt(100_000)), VALUE_100) }
+                val after = engine.stats()
+                val user = after.userBytesWritten - before.userBytesWritten
+                val disk = after.diskBytesWritten - before.diskBytesWritten
+                println("| ${bench.name} | 키 10만 적재 후 무작위 갱신 10만 (갱신 구간만) | ${mib(user)} | ${mib(disk)} | ${"%.2f".format(disk.toDouble() / user)} | ${mib(after.diskBytesUsed)} | ${engine.tables()} |")
+            }
+        }
     }
-    println("\nM1은 merge를 부르지 않은 상태(자동 merge 없음), M2는 쓰기 중 자동 flush·compaction이 일어난 상태다.\n")
+    println("\nM1은 merge를 부르지 않은 상태(자동 merge 없음), M2는 쓰기 중 자동 flush·compaction, M3는 자동 체크포인트가 일어난 상태다.\n")
 }
 
 private fun row(bench: Bench, workload: String, engine: KvEngine) {
@@ -82,7 +100,7 @@ private fun row(bench: Bench, workload: String, engine: KvEngine) {
 }
 
 private fun restartTime() {
-    println("## 3. 재시작 시간 (값 1 KiB, warm cache)\n")
+    println("## 3. 재시작 시간 (값 1,000 B, warm cache)\n")
     println("| 엔진 | 데이터 | open 시간 |")
     println("|---|---:|---:|")
     for (bench in ENGINES) {
@@ -131,6 +149,7 @@ private fun missingKeyGet() {
         Triple("M1 Log", "-") { dir: Path -> LogEngine.open(LogEngineOptions(dir, 64L * 1024 * 1024, SyncPolicy.MANUAL)) as KvEngine },
         Triple("M2 LSM", "10 bits/key") { dir: Path -> LsmEngine.open(LsmOptions(dir, syncPolicy = SyncPolicy.MANUAL)) },
         Triple("M2 LSM", "없음") { dir: Path -> LsmEngine.open(LsmOptions(dir, bloomBitsPerKey = 0, syncPolicy = SyncPolicy.MANUAL)) },
+        Triple("M3 B+tree", "-") { dir: Path -> BTreeEngine.open(BTreeOptions(dir, syncPolicy = SyncPolicy.MANUAL)) },
     )
     for ((name, bloom, open) in variants) {
         withTempDir { dir ->
@@ -162,5 +181,5 @@ private fun heapPerKey() {
             }
         }
     }
-    println("\nM2는 memtable(최대 1 MiB 근사)을 포함한다.\n")
+    println("\nM2는 memtable(최대 1 MiB 근사), M3는 버퍼 풀(최대 4 MiB)을 포함한다.\n")
 }

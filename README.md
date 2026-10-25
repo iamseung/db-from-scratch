@@ -7,7 +7,7 @@ RDBMS와 NoSQL의 차이를 직접 만들어 보며 이해하기 위한 학습�
 이렇게 해서 "관계형이라서 생기는 차이"와 "저장 구조 때문에 생기는 차이"를 따로 측정합니다.
 
 - 설계 문서: [`docs/design.html`](docs/design.html)
-- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md) · [M2 engine-lsm](docs/detailed/m2-engine-lsm.md) · [M3 engine-btree](docs/detailed/m3-engine-btree.md)
+- 상세 설계: [M0 storage-common](docs/detailed/m0-storage-common.md) · [M1 engine-log](docs/detailed/m1-engine-log.md) · [M2 engine-lsm](docs/detailed/m2-engine-lsm.md) · [M3 engine-btree](docs/detailed/m3-engine-btree.md) · [M4 비교 실험](docs/detailed/m4-engine-comparison.md) · [M5 document](docs/detailed/m5-document.md)
 - 언어: Kotlin (JVM 21), Spring 등 프레임워크 없이, 외부 의존성은 테스트용만
 
 ## 구조
@@ -35,10 +35,10 @@ DURABILITY   storage-common (WAL, fsync)
   - [x] 상세 설계
   - [x] 구현 (memtable, SSTable, bloom, MANIFEST, size-tiered compaction, Version 고정) + 하네스·돌연변이 검증
   - [x] 측정 → [M1 vs M2 결과](docs/measurements/m2-lsm-vs-log.md)
-- [ ] M3 B+tree
+- [x] M3 B+tree
   - [x] 상세 설계
   - [x] 구현 (슬롯 페이지, no-steal 버퍼 풀, split, WAL + doublewrite 체크포인트) + 하네스·돌연변이 검증
-  - [ ] 측정
+  - [x] 측정 → [세 엔진 비교](docs/measurements/m3-three-engines.md)
 - [ ] M4 비교 실험 1: 저장 엔진 (쓰기·읽기·공간 증폭)
 - [ ] M5 문서 계층
 - [ ] M6 관계형 계층 (SQL 파서, planner, executor, JOIN)
@@ -56,5 +56,5 @@ DURABILITY   storage-common (WAL, fsync)
 
 ```bash
 ./gradlew :bench:run --args=m1   # M1 단독
-./gradlew :bench:run --args=m2   # M1 vs M2 비교
+./gradlew :bench:run --args=compare   # M1 · M2 · M3 비교
 ```

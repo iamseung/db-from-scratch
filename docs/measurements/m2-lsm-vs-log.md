@@ -1,6 +1,6 @@
 # M2 측정: M1 LogEngine vs M2 LsmEngine
 
-> 측정일 2026-10-25 · 재현: `./gradlew :bench:run --args=m2` (약 6분) · 코드: [`CompareBench.kt`](../../bench/src/main/kotlin/dev/mydb/bench/CompareBench.kt)
+> 측정일 2026-10-25 · 재현: 당시 `--args=m2`(두 엔진). 지금은 `./gradlew :bench:run --args=compare`가 M3까지 함께 잰다 · 코드: [`CompareBench.kt`](../../bench/src/main/kotlin/dev/mydb/bench/CompareBench.kt)
 > 환경은 [M1 측정](m1-log-engine.md)과 같다 (M4 Pro, APFS, Corretto 21, `-Xmx4g`). 두 엔진을 **같은 실행**에서 같은 시나리오로 쟀다.
 > 설정: M1 세그먼트 64 MiB / M2 memtable 1 MiB, 블록 4 KiB, bloom 10 bits/key, size-tiered 최소 4개.
 

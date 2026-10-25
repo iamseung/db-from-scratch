@@ -5,6 +5,7 @@ plugins {
 dependencies {
     "implementation"(project(":engine-log"))
     "implementation"(project(":engine-lsm"))
+    "implementation"(project(":engine-btree"))
 }
 
 application {

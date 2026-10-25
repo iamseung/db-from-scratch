@@ -227,7 +227,7 @@ doublewrite 파일에 바뀔 페이지 전체가 먼저 확정되어 있으면, 
 
 | 워크로드 | 예상 | 이유 |
 |---|---|---|
-| 순차 삽입 | 낮음 (약 3) | 리프가 순서대로 차서 페이지당 셀 30개가 한 번에 쓰임: WAL 1 + (doublewrite + 제자리) 2 |
+| 순차 삽입 | ~~낮음 (약 3)~~ → **실측 5.39** | 리프가 꽉 찬다고 가정했으나 순차 삽입 채움률은 0.51이라 페이지 바이트가 데이터의 2.1배: 1.15 + 2 × 2.1 ≈ 5.4 ([측정](../measurements/m3-three-engines.md) §2) |
 | 무작위 갱신, 키 공간 ≫ 버퍼 풀 | 매우 높음 (수십) | 체크포인트 구간마다 갱신 하나가 4 KiB 페이지 하나를 두 번 씀: 4096 × 2 / 114 ≈ 72 |
 | 같은 키 반복 갱신 | 낮음 | 같은 페이지가 한 구간에 여러 번 바뀌어도 체크포인트 때 한 번만 쓰임 |
 
@@ -301,10 +301,12 @@ data class BTreeOptions(
 
 ## 13. 측정 (M1·M2와 같은 표 + M3 전용)
 
+결과: [docs/measurements/m3-three-engines.md](../measurements/m3-three-engines.md). 7개 예상 중 5개 적중, 순차 삽입 쓰기 증폭 틀림(채움률 누락), scan은 규모에 따라 엇갈림.
+
 | 항목 | 예상 |
 |---|---|
 | put MANUAL 처리량 | M1·M2보다 낮음 (페이지 내 memmove, split, 체크포인트) |
-| 쓰기 증폭: 순차 / 무작위 갱신 | 약 3 / 수십 (§10) |
+| 쓰기 증폭: 순차 / 무작위 갱신 | ~~약 3~~ 실측 5.39 / 수십 → 실측 67.08 (§10) |
 | scan 100건 | M2와 비슷하거나 빠름 (리프 몇 장) |
 | 없는 키 get | 존재하는 키와 같은 비용 |
 | 키 100만 개 힙 | 버퍼 풀 크기로 고정 (4 MiB) — 키 수와 무관 |
@@ -312,10 +314,10 @@ data class BTreeOptions(
 
 ## 14. 구현 순서
 
-1. `Page`(헤더·체크섬) → `LeafPage`/`InternalPage`(슬롯·compact) + 단위 테스트
-2. `Pager` → `BufferPool` + 단위 테스트
-3. `BTree` 탐색·삽입·split·삭제·반복자 + `BTreeVerifier` + 대량 삽입 테스트
-4. `BTreeEngine`: WAL, 체크포인트(doublewrite), 복구 → 계약 테스트
-5. 공통 하네스(무작위·크래시) + FaultInjector + torn page 테스트
-6. 돌연변이 검증
-7. 측정
+1. ✅ `Page`(헤더·체크섬) → `LeafPage`/`InternalPage`(슬롯·compact) + 단위 테스트
+2. ✅ `Pager` → `BufferPool` + 단위 테스트
+3. ✅ `BTree` 탐색·삽입·split·삭제·반복자 + `BTreeVerifier` + 대량 삽입 테스트
+4. ✅ `BTreeEngine`: WAL, 체크포인트(doublewrite), 복구 → 계약 테스트
+5. ✅ 공통 하네스(무작위·크래시) + FaultInjector + torn page 테스트
+6. ✅ 돌연변이 검증
+7. ✅ 측정

@@ -176,6 +176,137 @@ abstract class TxnTestBase {
         }
     }
 
+    // ---- SERIALIZABLE (SSI) ----
+
+    @Test
+    fun `SERIALIZABLE은 write skew를 막는다 - 당직 의사`() = withStore { store ->
+        fun onCall(t: Txn) = listOf("alice", "bob").count { t.str("oncall/$it") == "true" }
+        store.run { it.put(b("oncall/alice"), b("true")); it.put(b("oncall/bob"), b("true")) }
+
+        val alice = store.begin(Isolation.SERIALIZABLE)
+        val bob = store.begin(Isolation.SERIALIZABLE)
+        if (onCall(alice) >= 2) alice.put(b("oncall/alice"), b("false"))
+        if (onCall(bob) >= 2) bob.put(b("oncall/bob"), b("false"))
+        alice.commit()
+        assertFailsWith<SerializationFailureException> { bob.commit() }
+
+        assertEquals(1, store.begin().use { onCall(it) }, "당직이 최소 한 명 남는다")
+        assertEquals(0, store.retainedSerializableRecords(), "진행 중인 트랜잭션이 없으면 SSI 기록도 없어야 한다")
+    }
+
+    /** 범위를 읽고(없음을 확인하고) 서로 다른 새 키를 쓰는 write skew. 키 단위 추적만으로는 못 잡고 범위 추적이 필요하다. */
+    @Test
+    fun `SERIALIZABLE은 phantom write skew를 막는다 - 회의실 이중 예약`() = withStore { store ->
+        fun booked(t: Txn) = t.scan(b("room/1/10:00/"), b("room/1/10:00/~")).size
+        val t1 = store.begin(Isolation.SERIALIZABLE)
+        val t2 = store.begin(Isolation.SERIALIZABLE)
+        if (booked(t1) == 0) t1.put(b("room/1/10:00/alice"), b("x"))
+        if (booked(t2) == 0) t2.put(b("room/1/10:00/bob"), b("x"))
+        t1.commit()
+        assertFailsWith<SerializationFailureException> { t2.commit() }
+        assertEquals(1, store.begin().use { booked(it) })
+
+        // 같은 시나리오를 SNAPSHOT으로: 둘 다 커밋되어 이중 예약
+        val s1 = store.begin(Isolation.SNAPSHOT)
+        val s2 = store.begin(Isolation.SNAPSHOT)
+        if (s1.scan(b("room/2/"), b("room/2/~")).isEmpty()) s1.put(b("room/2/alice"), b("x"))
+        if (s2.scan(b("room/2/"), b("room/2/~")).isEmpty()) s2.put(b("room/2/bob"), b("x"))
+        s1.commit()
+        s2.commit()
+        assertEquals(2, store.begin().use { it.scan(b("room/2/"), b("room/2/~")).size }, "스냅샷 격리에서는 이중 예약이 일어난다")
+    }
+
+    /**
+     * 읽기 전용 이상 현상 (Fekete, O'Neil, O'Neil 2004). checking x = 0, savings y = 0.
+     * T2: x, y를 읽고 x + y < 10이면 수수료 1 포함 11을 뺀다 / T3: y에 20 입금 / T1(읽기 전용): x, y 보고서.
+     * 순서: T2 읽기 → T3 커밋 → T1 읽기·커밋 (보고서 x=0, y=20) → T2 쓰기·커밋 (x=-11).
+     * 보고서가 "입금 후·출금 전"을 보여 줬다면 출금은 입금을 봤어야 해서 수수료가 붙으면 안 된다 → 어떤 직렬 순서로도 설명되지 않는다.
+     * T2가 피벗(T1 → T2 → T3)이다.
+     */
+    @Test
+    fun `SERIALIZABLE은 읽기 전용 이상 현상도 막는다`() = withStore { store ->
+        fun scenario(isolation: Isolation): Pair<String, Boolean> {
+            store.run { it.put(b("x"), b("0")); it.put(b("y"), b("0")) }
+            val t2 = store.begin(isolation)
+            val total = t2.str("x")!!.toInt() + t2.str("y")!!.toInt()
+            store.begin(isolation).also { t3 -> t3.put(b("y"), b("${t3.str("y")!!.toInt() + 20}")); t3.commit() }
+            val report = store.begin(isolation).let { t1 -> "x=${t1.str("x")}, y=${t1.str("y")}".also { t1.commit() } }
+            t2.put(b("x"), b("${-(if (total < 10) 11 else 10)}"))
+            val committed = runCatching { t2.commit() }.isSuccess
+            return report to committed
+        }
+        val (snapshotReport, snapshotCommitted) = scenario(Isolation.SNAPSHOT)
+        assertEquals("x=0, y=20" to true, snapshotReport to snapshotCommitted, "스냅샷 격리: 보고서와 맞지 않는 수수료 출금이 커밋된다")
+        val (serialReport, serialCommitted) = scenario(Isolation.SERIALIZABLE)
+        assertEquals("x=0, y=20", serialReport)
+        assertEquals(false, serialCommitted, "SSI: 피벗 T2가 중단된다")
+        assertEquals("0", store.begin().use { it.str("x") })
+    }
+
+    /**
+     * 같은 이상 현상인데 보고서 T1이 **마지막에** 커밋하는 순서: T2(피벗)는 T1이 x를 읽기 전에 커밋해 그 시점엔 들어오는 간선이 없다.
+     * T1이 커밋할 때 T1 → T2 간선이 생기고 T2는 이미 나가는 간선(T2 → T3)을 가진 채 커밋됐으므로, 규칙 (C)만 T1을 중단할 수 있다.
+     * 읽기 전용 T1을 중단해 "보고서가 직렬화 불가능한 상태를 보여 주는" 것을 막는다.
+     */
+    @Test
+    fun `SERIALIZABLE은 읽기 전용 이상 현상을 보고서가 마지막에 커밋해도 막는다 - 규칙 C`() = withStore { store ->
+        store.run { it.put(b("x"), b("0")); it.put(b("y"), b("0")) }
+        val t2 = store.begin(Isolation.SERIALIZABLE)
+        val total = t2.str("x")!!.toInt() + t2.str("y")!!.toInt()
+        store.begin(Isolation.SERIALIZABLE).also { t3 -> t3.put(b("y"), b("${t3.str("y")!!.toInt() + 20}")); t3.commit() }
+        val t1 = store.begin(Isolation.SERIALIZABLE)
+        t2.put(b("x"), b("${-(if (total < 10) 11 else 10)}"))
+        t2.commit()
+        val report = "x=${t1.str("x")}, y=${t1.str("y")}"
+
+        assertEquals("x=0, y=20", report, "스냅샷이 보여 주는 값 — 최종 상태 x=-11과 어떤 직렬 순서로도 맞지 않는다")
+        assertFailsWith<SerializationFailureException> { t1.commit() }
+        assertEquals(0, store.retainedSerializableRecords())
+    }
+
+    @Test
+    fun `SERIALIZABLE도 겹치지 않는 트랜잭션은 중단하지 않는다`() = withStore { store ->
+        val a = store.begin(Isolation.SERIALIZABLE)
+        val c = store.begin(Isolation.SERIALIZABLE)
+        a.str("a/1")
+        a.put(b("a/1"), b("1"))
+        c.str("c/1")
+        c.put(b("c/1"), b("1"))
+        a.commit()
+        c.commit()
+        store.begin(Isolation.SERIALIZABLE).use { it.str("a/1"); it.commit() }
+        assertEquals(0, store.retainedSerializableRecords())
+    }
+
+    /** 제약 "x + y ≥ 0"을 지키며 x나 y에서 출금. 스냅샷 격리에서는 write skew로 깨질 수 있는 제약이다. */
+    @Test
+    fun `SERIALIZABLE 동시 출금 - 여러 행에 걸친 제약이 깨지지 않는다`() = withStore { store ->
+        store.run { it.put(b("acct/x"), b("100")); it.put(b("acct/y"), b("100")) }
+        val failures = java.util.concurrent.atomic.AtomicInteger()
+        val pool = Executors.newFixedThreadPool(8)
+        repeat(8) { worker ->
+            pool.submit {
+                val random = Random(worker)
+                repeat(40) {
+                    val target = if (random.nextBoolean()) "acct/x" else "acct/y"
+                    val amount = random.nextInt(1, 30)
+                    var attempts = 0
+                    store.run(isolation = Isolation.SERIALIZABLE, maxAttempts = 500) { t ->
+                        if (attempts++ > 0) failures.incrementAndGet()
+                        val x = t.str("acct/x")!!.toInt()
+                        val y = t.str("acct/y")!!.toInt()
+                        if (x + y >= amount) t.put(b(target), b("${t.str(target)!!.toInt() - amount}"))
+                    }
+                }
+            }
+        }
+        pool.shutdown()
+        assertTrue(pool.awaitTermination(5, TimeUnit.MINUTES))
+        store.begin().use { t -> assertTrue(t.str("acct/x")!!.toInt() + t.str("acct/y")!!.toInt() >= 0, "x + y ≥ 0") }
+        assertEquals(0, store.retainedSerializableRecords())
+        println("SSI 동시 출금 재시도: ${failures.get()}회")
+    }
+
     /** 로드맵 M7 완료 조건: 동시 이체에서 잔액 합계 보존. */
     @Test
     fun `동시 이체 - 스레드 8개가 이체해도 합계가 보존되고 모든 스냅샷이 같은 합계를 본다`() = withStore { store ->

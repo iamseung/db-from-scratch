@@ -141,12 +141,35 @@ abstract class SqlTransactionTest {
     }
 
     @Test
+    fun `BEGIN ISOLATION LEVEL SERIALIZABLE은 write skew를 막고 SNAPSHOT은 허용한다`() = withDb { db ->
+        db.execute("CREATE TABLE doctors (name TEXT PRIMARY KEY, on_call BOOL NOT NULL, shift INT NOT NULL)")
+        db.execute("INSERT INTO doctors VALUES ('alice', TRUE, 1), ('bob', TRUE, 1), ('carol', TRUE, 2), ('dave', TRUE, 2)")
+        fun Session.onCall(shift: Int) = query("SELECT name FROM doctors WHERE shift = $shift AND on_call = TRUE").size
+        fun leave(level: String, shift: Int, a: String, b: String): Boolean {
+            val s1 = db.session()
+            val s2 = db.session()
+            s1.execute("BEGIN ISOLATION LEVEL $level")
+            s2.execute("BEGIN ISOLATION LEVEL $level")
+            if (s1.onCall(shift) >= 2) s1.execute("UPDATE doctors SET on_call = FALSE WHERE name = '$a'")
+            if (s2.onCall(shift) >= 2) s2.execute("UPDATE doctors SET on_call = FALSE WHERE name = '$b'")
+            s1.execute("COMMIT")
+            return runCatching { s2.execute("COMMIT") }.isSuccess
+        }
+
+        assertTrue(leave("SNAPSHOT", 1, "alice", "bob"), "스냅샷 격리: 둘 다 커밋")
+        assertEquals(0, db.session().onCall(1), "write skew: 1조 당직 0명")
+        assertFalse(leave("SERIALIZABLE", 2, "carol", "dave"), "SSI: 나중 COMMIT이 직렬화 실패")
+        assertEquals(1, db.session().onCall(2))
+    }
+
+    @Test
     fun `트랜잭션 제어 오류`() = withDb { db ->
         val s = db.session()
         assertFailsWith<SqlException> { s.execute("COMMIT") }
         assertFailsWith<SqlException> { s.execute("ROLLBACK") }
         s.execute("BEGIN TRANSACTION")
         assertFailsWith<SqlException> { s.execute("BEGIN") }
+        assertFailsWith<SqlException> { db.session().execute("BEGIN ISOLATION LEVEL CHAOS") }
         s.execute("COMMIT")
         dir.resolve("raw").let { rawDir ->
             LsmEngine.open(LsmOptions(rawDir)).use { engine -> assertFailsWith<SqlException> { Database(engine).execute("BEGIN") } }

@@ -31,7 +31,7 @@ internal class Executor(private val engine: KvEngine) {
         is Statement.Delete -> delete(statement)
         is Statement.Explain -> Result.Plan(planSelect(statement.select).first.explain().trimEnd())
         is Statement.AlterAddColumn -> alterAddColumn(statement)
-        Statement.Begin, Statement.Commit, Statement.Rollback -> error("트랜잭션 제어 문장은 Session이 처리한다")
+        is Statement.Begin, Statement.Commit, Statement.Rollback -> error("트랜잭션 제어 문장은 Session이 처리한다")
     }
 
     /**

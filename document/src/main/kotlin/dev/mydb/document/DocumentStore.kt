@@ -3,6 +3,7 @@ package dev.mydb.document
 import dev.mydb.kv.ByteKeys
 import dev.mydb.kv.KvEngine
 import dev.mydb.kv.WriteOp
+import dev.mydb.txn.Isolation
 import dev.mydb.txn.Txn
 import dev.mydb.txn.TxnKvView
 import dev.mydb.txn.TxnStore
@@ -26,10 +27,10 @@ import java.nio.ByteBuffer
  * 두 모드가 있고 데이터 파일 형식이 다르다(서로 열 수 없다).
  * - 비트랜잭션 모드 (기본): 저장 엔진에 바로 쓴다. 쓰기는 "옛 문서 읽기 → 배치 쓰기"라 저장소 단위로 직렬화한다.
  * - 트랜잭션 모드 (`transactional = true`): M7 MVCC 위. [transaction]/[begin]으로 여러 문서를 원자적으로 바꾸고,
- *   그 밖의 연산은 연산마다 자동 커밋(충돌 시 재시도)한다. 격리 수준은 스냅샷 격리다.
+ *   그 밖의 연산은 연산마다 자동 커밋(충돌 시 재시도)한다. 격리 수준은 [isolation](기본: 스냅샷 격리)이고 트랜잭션마다 바꿀 수 있다.
  */
-class DocumentStore(private val engine: KvEngine, transactional: Boolean = false) {
-    private val txns: TxnStore? = if (transactional) TxnStore(engine) else null
+class DocumentStore(private val engine: KvEngine, transactional: Boolean = false, isolation: Isolation = Isolation.SNAPSHOT) {
+    private val txns: TxnStore? = if (transactional) TxnStore(engine, isolation) else null
 
     /**
      * 컬렉션별 인덱스 정의 캐시 (경로 → 인덱스 id). 쓰기마다 메타데이터를 범위 scan하면,
@@ -59,10 +60,10 @@ class DocumentStore(private val engine: KvEngine, transactional: Boolean = false
      * [block] 안의 모든 변경을 한 트랜잭션으로 커밋한다. 쓰기 충돌이면 새 스냅샷으로 [block]을 처음부터 다시 실행하므로,
      * [block]은 다시 실행해도 되는 코드여야 한다 (바깥 상태를 바꾸지 말 것).
      */
-    fun <T> transaction(maxAttempts: Int = 50, block: (DocumentTransaction) -> T): T {
+    fun <T> transaction(maxAttempts: Int = 50, isolation: Isolation? = null, block: (DocumentTransaction) -> T): T {
         var lastConflict: WriteConflictException? = null
         repeat(maxAttempts) {
-            val tx = begin()
+            val tx = begin(isolation)
             try {
                 val result = block(tx)
                 tx.commit()
@@ -76,10 +77,13 @@ class DocumentStore(private val engine: KvEngine, transactional: Boolean = false
         throw lastConflict!!
     }
 
-    /** 직접 커밋·롤백하는 트랜잭션. commit()이 쓰기 충돌이면 WriteConflictException이고 변경은 모두 버려진다. */
-    fun begin(): DocumentTransaction {
+    /**
+     * 직접 커밋·롤백하는 트랜잭션. commit()이 충돌이면 WriteConflictException(SERIALIZABLE의 위험 구조 검출은 하위 타입
+     * SerializationFailureException)이고 변경은 모두 버려진다. [isolation]이 null이면 저장소의 기본 격리 수준.
+     */
+    fun begin(isolation: Isolation? = null): DocumentTransaction {
         val store = txns ?: throw IllegalStateException("트랜잭션은 트랜잭션 모드 DocumentStore(transactional = true)에서만 쓸 수 있습니다")
-        return DocumentTransaction(store.begin())
+        return DocumentTransaction(store.begin(isolation ?: store.defaultIsolation))
     }
 
     data class Document(val id: String, val body: JsonObject)

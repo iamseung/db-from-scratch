@@ -202,7 +202,7 @@ Database(engine, transactional)
 | 트랜잭션 안의 문장이 실패 (제약 위반 등) | 그 문장만 무효, 트랜잭션은 열린 채. 문장이 KV 변경을 모아 마지막에 한 번에 쓰므로 실패한 문장의 일부가 남지 않는다 (PostgreSQL은 트랜잭션 전체를 실패 상태로 만든다 — 여기서는 MySQL 쪽 동작) |
 | 두 트랜잭션이 같은 행을 바꿈 | 나중 COMMIT이 `직렬화 실패`. 그 트랜잭션의 모든 변경이 버려지고, 애플리케이션이 처음부터 다시 실행한다 |
 | 트랜잭션 밖의 문장 | 문장마다 자동 커밋. 충돌이면 새 스냅샷으로 **문장을 자동 재실행**한다 (문장 하나는 다시 실행해도 안전) |
-| 격리 수준 | 스냅샷 격리. write skew는 막지 않는다(M7 §6). `SELECT … FOR UPDATE` 없음 |
+| 격리 수준 | 기본 스냅샷 격리(write skew 허용). `BEGIN ISOLATION LEVEL SERIALIZABLE`이면 SSI로 write skew까지 막는다 ([m7 §11](m7-transactions.md)). `Database(…, isolation = …)`로 기본값 변경. `SELECT … FOR UPDATE` 없음 |
 | 중첩 BEGIN, BEGIN 없는 COMMIT | 오류 |
 
 ### 10.3 검증

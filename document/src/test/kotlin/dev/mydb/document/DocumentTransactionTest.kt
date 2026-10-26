@@ -9,6 +9,8 @@ import dev.mydb.engine.lsm.LsmEngine
 import dev.mydb.engine.lsm.LsmOptions
 import dev.mydb.kv.KvEngine
 import dev.mydb.storage.SyncPolicy
+import dev.mydb.txn.Isolation
+import dev.mydb.txn.SerializationFailureException
 import dev.mydb.txn.WriteConflictException
 import java.nio.file.Path
 import java.util.concurrent.Executors
@@ -196,6 +198,22 @@ abstract class DocumentTransactionTest {
         store.transaction { it.collection("c")!!.insert("late", obj("""{"city":"Seoul","zip":"1"}""")) }
         assertEquals(1, c.indexEntryCount("zip"))
         assertEquals(listOf("late"), c.find(Filter.Eq("zip", str("1"))).map { it.id })
+    }
+
+    /** 문서 모델의 write skew: 서로 다른 문서를 바꾸지만 같은 조건(당직 수)을 읽고 판단한다. */
+    @Test
+    fun `SERIALIZABLE 문서 트랜잭션은 write skew를 막는다`() = withStore { store ->
+        val doctors = store.createCollection("doctors")
+        listOf("alice", "bob").forEach { doctors.insert(it, obj("""{"onCall":true}""")) }
+        fun onCall(tx: DocumentStore.DocumentTransaction) = tx.collection("doctors")!!.find(Filter.Eq("onCall", JsonValue.Bool(true))).size
+
+        val t1 = store.begin(Isolation.SERIALIZABLE)
+        val t2 = store.begin(Isolation.SERIALIZABLE)
+        if (onCall(t1) >= 2) t1.collection("doctors")!!.replace("alice", obj("""{"onCall":false}"""))
+        if (onCall(t2) >= 2) t2.collection("doctors")!!.replace("bob", obj("""{"onCall":false}"""))
+        t1.commit()
+        assertFailsWith<SerializationFailureException> { t2.commit() }
+        assertEquals(1, doctors.find(Filter.Eq("onCall", JsonValue.Bool(true))).size)
     }
 
     @Test

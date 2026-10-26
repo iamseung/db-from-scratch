@@ -1,5 +1,7 @@
 package dev.mydb.sql
 
+import dev.mydb.txn.Isolation
+
 // ---------- AST ----------
 
 sealed interface Expr {
@@ -79,7 +81,8 @@ sealed interface Statement {
     /** NULL 허용 열만 추가한다 (기존 행은 NULL). */
     data class AlterAddColumn(val table: String, val column: ColumnDef) : Statement
 
-    data object Begin : Statement
+    /** null이면 Database의 기본 격리 수준. */
+    data class Begin(val isolation: Isolation?) : Statement
 
     data object Commit : Statement
 
@@ -97,7 +100,7 @@ object Lexer {
         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "IS", "TRUE", "FALSE", "INSERT", "INTO", "VALUES",
         "CREATE", "TABLE", "INDEX", "ON", "PRIMARY", "KEY", "INT", "INTEGER", "BIGINT", "TEXT", "BOOL", "BOOLEAN",
         "UPDATE", "SET", "DELETE", "JOIN", "INNER", "ORDER", "BY", "ASC", "DESC", "LIMIT", "EXPLAIN", "AS",
-        "ALTER", "ADD", "COLUMN", "BEGIN", "TRANSACTION", "COMMIT", "ROLLBACK",
+        "ALTER", "ADD", "COLUMN", "BEGIN", "TRANSACTION", "COMMIT", "ROLLBACK", "ISOLATION", "LEVEL", "SERIALIZABLE", "SNAPSHOT",
     )
 
     fun tokenize(sql: String): List<Token> {
@@ -181,7 +184,7 @@ class Parser private constructor(private val tokens: List<Token>) {
         acceptKeyword("DELETE") -> delete()
         acceptKeyword("EXPLAIN") -> { expectKeyword("SELECT"); Statement.Explain(select()) }
         acceptKeyword("ALTER") -> alterTable()
-        acceptKeyword("BEGIN") -> Statement.Begin.also { acceptKeyword("TRANSACTION") }
+        acceptKeyword("BEGIN") -> begin()
         acceptKeyword("COMMIT") -> Statement.Commit
         acceptKeyword("ROLLBACK") -> Statement.Rollback
         else -> fail("문장이 필요합니다 (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, EXPLAIN, BEGIN, COMMIT, ROLLBACK)")
@@ -216,6 +219,17 @@ class Parser private constructor(private val tokens: List<Token>) {
             "TEXT" -> SqlType.TEXT
             "BOOL", "BOOLEAN" -> SqlType.BOOL
             else -> fail("타입이 필요합니다 (INT, TEXT, BOOL)", back = 1)
+        }
+    }
+
+    private fun begin(): Statement.Begin {
+        acceptKeyword("TRANSACTION")
+        if (!acceptKeyword("ISOLATION")) return Statement.Begin(null)
+        expectKeyword("LEVEL")
+        return when {
+            acceptKeyword("SERIALIZABLE") -> Statement.Begin(Isolation.SERIALIZABLE)
+            acceptKeyword("SNAPSHOT") -> Statement.Begin(Isolation.SNAPSHOT)
+            else -> fail("격리 수준이 필요합니다 (SERIALIZABLE, SNAPSHOT)")
         }
     }
 

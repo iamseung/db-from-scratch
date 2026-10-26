@@ -165,6 +165,7 @@ store.transaction { tx ->                       // 충돌이면 블록 전체를
 }
 
 store.begin().use { tx -> …; tx.commit() }       // 직접 제어. commit()이 충돌이면 WriteConflictException
+store.begin(Isolation.SERIALIZABLE)              // SSI: write skew까지 막는다 (m7 §11). transaction(isolation = …)도 같음
 store.collection("orders")!!.insert(…)           // 트랜잭션 밖: 연산마다 자동 커밋 (충돌 시 재시도)
 ```
 

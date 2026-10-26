@@ -24,6 +24,7 @@ fun runSsiBench(only: String? = null) {
     if (only == null || only == "2") retainedRecords()
     if (only == null || only == "3") contention()
     if (only == null || only == "4") falsePositives()
+    if (only == null || only == "5") capCost()
 }
 
 private val ISOLATIONS = listOf(Isolation.SNAPSHOT, Isolation.SERIALIZABLE)
@@ -32,9 +33,9 @@ private fun k(n: Int) = "k%06d".format(n).toByteArray()
 
 private val VAL = ByteArray(100) { 'v'.code.toByte() }
 
-private fun <T> withStore(isolation: Isolation, preload: Int, block: (TxnStore) -> T): T = withTempDir { dir ->
+private fun <T> withStore(isolation: Isolation, preload: Int, maxRecords: Int = Int.MAX_VALUE, block: (TxnStore) -> T): T = withTempDir { dir ->
     LsmEngine.open(LsmOptions(dir, syncPolicy = SyncPolicy.MANUAL)).use { engine ->
-        val store = TxnStore(engine, isolation)
+        val store = TxnStore(engine, isolation, maxRetainedRecords = maxRecords)
         (0 until preload).chunked(1_000).forEach { chunk -> store.run { t -> chunk.forEach { t.put(k(it), VAL) } } }
         block(store)
     }
@@ -73,26 +74,29 @@ private fun fixedOverhead() {
 
 /**
  * 2. 오래 열린 SERIALIZABLE 트랜잭션이 있으면 그동안 커밋된 기록을 버릴 수 없다 (§11.2 커밋 기록).
- * 커밋 검사는 보관 중인 기록 수에 비례하므로, 쓰기 트랜잭션의 커밋이 점점 느려지는지 본다.
+ * 커밋 검사는 보관 중인 기록 수에 비례하므로, 쓰기 트랜잭션의 커밋이 점점 느려지는지 본다. 기록 상한(§11.7)의 효과도 함께.
  */
 private fun retainedRecords() {
     println("## 2. 오래 열린 트랜잭션과 커밋 기록 누적 (쓰기 트랜잭션 4,000개, 각각 get 1 + put 1, 서로 겹치지 않는 키)\n")
     println("오래 열린 트랜잭션은 키 100개를 읽은 채 측정 내내 열려 있다 (읽은 키는 쓰기 트랜잭션과 겹치지 않아 중단은 없다).\n")
-    println("| 격리 | 오래 열린 트랜잭션 | 앞 1,000건 커밋 평균 | 뒤 1,000건 커밋 평균 | 측정 끝 보관 기록 |")
-    println("|---|---:|---:|---:|---:|")
-    for (isolation in ISOLATIONS) {
+    println("| 격리 | 기록 상한 | 오래 열린 트랜잭션 | 앞 1,000건 커밋 평균 | 뒤 1,000건 커밋 평균 | 측정 끝 보관 기록 | 요약된 기록 |")
+    println("|---|---|---:|---:|---:|---:|---:|")
+    val configs = listOf(Isolation.SNAPSHOT to Int.MAX_VALUE, Isolation.SERIALIZABLE to Int.MAX_VALUE, Isolation.SERIALIZABLE to 100)
+    for ((isolation, cap) in configs) {
         for (idle in listOf(0, 1, 10)) {
-            withStore(isolation, 20_000) { store ->
+            withStore(isolation, 20_000, cap) { store ->
                 val readers = List(idle) { i -> store.begin().also { t -> repeat(100) { t.get(k(10_000 + i * 100 + it)) } } }
                 val latencies = LongArray(4_000)
                 repeat(4_000) { i ->
                     latencies[i] = measureNanoTime { store.run { t -> t.get(k(i)); t.put(k(i), VAL) } }
                 }
                 val retained = store.retainedSerializableRecords()
+                val summarized = store.summarizedRecords()
                 readers.forEach { it.close() }
                 val first = latencies.take(1_000).average() / 1e3
                 val last = latencies.takeLast(1_000).average() / 1e3
-                println("| $isolation | $idle | ${"%.1f".format(first)} µs | ${"%.1f".format(last)} µs | ${fmt(retained)} |")
+                val capLabel = if (cap == Int.MAX_VALUE) "없음" else fmt(cap)
+                println("| $isolation | $capLabel | $idle | ${"%.1f".format(first)} µs | ${"%.1f".format(last)} µs | ${fmt(retained)} | ${fmt(summarized)} |")
             }
         }
     }
@@ -230,6 +234,33 @@ private fun falsePositives() {
                 "| $chain | $isolation | ${rs.joinToString(" / ") { fmt(it.committedPerSec.toLong()) }} | ${"%.2f".format(median(rs.map { it.attemptsPerCommit }))} | " +
                     "${fmt(medianLong(rs.map { it.writeConflicts }))} | ${fmt(medianLong(rs.map { it.serializationFailures }))} |",
             )
+        }
+    }
+    println()
+}
+
+/**
+ * 5. 기록 상한의 대가: 상한이 작을수록 요약이 자주·거칠게 일어나 간선을 실제보다 많이 본다 → 거짓 양성이 는다.
+ * 4절의 사슬 64 워크로드에, 기록을 붙잡는 오래 열린 트랜잭션 하나를 더한다.
+ */
+private fun capCost() {
+    println("## 5. 기록 상한의 대가 — 사슬 64 워크로드 + 오래 열린 트랜잭션 1개 (스레드 8, 스레드당 커밋 300건)\n")
+    println("| 기록 상한 | 커밋/s | 커밋당 시도 | 쓰기 충돌 | 직렬화 실패 (거짓 양성) | 측정 끝 보관 기록 | 요약된 기록 |")
+    println("|---|---:|---:|---:|---:|---:|---:|")
+    for (cap in listOf(Int.MAX_VALUE, 1_000, 100, 10)) {
+        withStore(Isolation.SERIALIZABLE, 0, cap) { store ->
+            store.run { t -> repeat(65) { setNum(t, "c/%03d".format(it), 0) } }
+            val keeper = store.begin().also { it.get("unrelated".toByteArray()) }
+            val r = runContended(store, 300) { t, random ->
+                val i = random.nextInt(64)
+                val v = num(t, "c/%03d".format(i))
+                setNum(t, "c/%03d".format(i + 1), v + 1)
+            }
+            val retained = store.retainedSerializableRecords()
+            val summarized = store.summarizedRecords()
+            keeper.close()
+            val capLabel = if (cap == Int.MAX_VALUE) "없음" else fmt(cap)
+            println("| $capLabel | ${fmt(r.committedPerSec.toLong())} | ${"%.2f".format(r.attemptsPerCommit)} | ${fmt(r.writeConflicts)} | ${fmt(r.serializationFailures)} | ${fmt(retained)} | ${fmt(summarized)} |")
         }
     }
     println()

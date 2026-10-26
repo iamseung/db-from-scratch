@@ -50,6 +50,9 @@ abstract class TxnTestBase {
 
     private fun withStore(block: (TxnStore) -> Unit) = openEngine(dir).use { block(TxnStore(it)) }
 
+    private fun withCappedStore(maxRecords: Int, maxKeys: Int = 1_000, block: (TxnStore) -> Unit) =
+        openEngine(dir).use { block(TxnStore(it, maxRetainedRecords = maxRecords, maxKeysPerRecord = maxKeys)) }
+
     private fun TxnStore.set(key: String, value: String) = run { it.put(b(key), b(value)) }
 
     private fun Txn.str(key: String) = get(b(key))?.let(::String)
@@ -305,6 +308,82 @@ abstract class TxnTestBase {
         store.begin().use { t -> assertTrue(t.str("acct/x")!!.toInt() + t.str("acct/y")!!.toInt() >= 0, "x + y ≥ 0") }
         assertEquals(0, store.retainedSerializableRecords())
         println("SSI 동시 출금 재시도: ${failures.get()}회")
+    }
+
+    // ---- 커밋 기록 상한 (§11.7) ----
+
+    @Test
+    fun `오래 열린 트랜잭션이 있어도 보관 기록 수가 상한에서 멈춘다`() = withCappedStore(maxRecords = 50) { store ->
+        val idle = store.begin(Isolation.SERIALIZABLE).also { it.str("unrelated") }
+        repeat(1_000) { i -> store.run(isolation = Isolation.SERIALIZABLE) { t -> t.str("k$i"); t.put(b("k$i"), b("v")) } }
+
+        assertTrue(store.retainedSerializableRecords() <= 51, "보관 ${store.retainedSerializableRecords()} (상한 50 + 요약 1)")
+        assertTrue(store.summarizedRecords() > 900)
+        idle.close()
+        assertEquals(0, store.retainedSerializableRecords())
+    }
+
+    /**
+     * 상대(alice)의 기록이 요약 기록으로 합쳐진 뒤에도 write skew가 막혀야 한다 — 요약이 간선을 잃지 않는다는 확인.
+     * bob보다 **먼저 끝난** 오래된 기록도 같은 요약에 섞이게 해서, 요약이 겹침 판정(종료 순번)을 늦은 쪽으로 잡는지까지 본다.
+     */
+    @Test
+    fun `요약된 기록으로도 write skew를 막는다`() = withCappedStore(maxRecords = 4) { store ->
+        fun onCall(t: Txn) = listOf("alice", "bob").count { t.str("oncall/$it") == "true" }
+        store.run { it.put(b("oncall/alice"), b("true")); it.put(b("oncall/bob"), b("true")) }
+        val keeper = store.begin(Isolation.SERIALIZABLE).also { it.str("keep") } // 오래된 기록이 버려지지 않게 붙잡는다
+        repeat(3) { i -> store.run(isolation = Isolation.SERIALIZABLE) { t -> t.str("old/$i"); t.put(b("old/$i"), b("v")) } }
+
+        val alice = store.begin(Isolation.SERIALIZABLE)
+        val bob = store.begin(Isolation.SERIALIZABLE)
+        if (onCall(alice) >= 2) alice.put(b("oncall/alice"), b("false"))
+        if (onCall(bob) >= 2) bob.put(b("oncall/bob"), b("false"))
+        alice.commit()
+        repeat(20) { i -> store.run(isolation = Isolation.SERIALIZABLE) { t -> t.str("other/$i"); t.put(b("other/$i"), b("v")) } }
+        assertTrue(store.summarizedRecords() > 0, "alice의 기록이 요약되어야 이 테스트가 의미 있다")
+
+        assertFailsWith<SerializationFailureException> { bob.commit() }
+        assertEquals(1, store.begin().use { onCall(it) })
+        keeper.close()
+    }
+
+    /**
+     * 규칙 (C) + 요약: 읽기 전용 이상 현상에서 피벗 T2와 입금 T3의 기록이 모두 요약된 뒤 보고서 T1이 커밋한다.
+     * T1을 막으려면 요약이 T2의 쓰기(x), T2의 나가는 충돌 표시, 그리고 T1 시작 이후의 커밋 시각(늦은 쪽)을 모두 보존해야 한다.
+     * 요약에는 T1 시작 전에 커밋한 T3도 섞이므로, 시각을 이른 쪽으로 잡으면 간선을 놓친다.
+     */
+    @Test
+    fun `요약된 기록으로도 읽기 전용 이상 현상을 막는다 - 규칙 C`() = withCappedStore(maxRecords = 4) { store ->
+        store.run { it.put(b("x"), b("0")); it.put(b("y"), b("0")) }
+        val keeper = store.begin(Isolation.SERIALIZABLE).also { it.str("keep") }
+        val t2 = store.begin(Isolation.SERIALIZABLE)
+        val total = t2.str("x")!!.toInt() + t2.str("y")!!.toInt()
+        store.begin(Isolation.SERIALIZABLE).also { t3 -> t3.put(b("y"), b("${t3.str("y")!!.toInt() + 20}")); t3.commit() }
+        val t1 = store.begin(Isolation.SERIALIZABLE)
+        t2.put(b("x"), b("${-(if (total < 10) 11 else 10)}"))
+        t2.commit()
+        repeat(20) { i -> store.run(isolation = Isolation.SERIALIZABLE) { t -> t.str("other/$i"); t.put(b("other/$i"), b("v")) } }
+        assertTrue(store.summarizedRecords() >= 2, "T3, T2의 기록이 요약되어야 이 테스트가 의미 있다")
+
+        assertEquals("x=0, y=20", "x=${t1.str("x")}, y=${t1.str("y")}")
+        assertFailsWith<SerializationFailureException> { t1.commit() }
+        keeper.close()
+    }
+
+    /** 읽기 집합이 키 수 상한을 넘어 범위로 거칠게 바뀐 기록도 write skew를 막는다. */
+    @Test
+    fun `키 수 상한으로 거칠게 만든 기록으로도 write skew를 막는다`() = withCappedStore(maxRecords = 1_000, maxKeys = 5) { store ->
+        val doctors = (0 until 20).map { "oncall/d%02d".format(it) }
+        fun onCall(t: Txn) = doctors.count { t.str(it) == "true" }
+        store.run { t -> doctors.take(2).forEach { t.put(b(it), b("true")) }; doctors.drop(2).forEach { t.put(b(it), b("false")) } }
+
+        val a = store.begin(Isolation.SERIALIZABLE)
+        val c = store.begin(Isolation.SERIALIZABLE)
+        if (onCall(a) >= 2) a.put(b(doctors[0]), b("false"))
+        if (onCall(c) >= 2) c.put(b(doctors[1]), b("false"))
+        a.commit() // a의 읽기 20개 > 상한 5 → 기록은 범위 하나
+        assertFailsWith<SerializationFailureException> { c.commit() }
+        assertEquals(1, store.begin().use { onCall(it) })
     }
 
     /** 로드맵 M7 완료 조건: 동시 이체에서 잔액 합계 보존. */

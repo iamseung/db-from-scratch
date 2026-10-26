@@ -33,7 +33,19 @@ enum class Isolation {
  *
  * 스레드 안전하다. Txn 하나는 한 스레드에서만 쓴다.
  */
-class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = Isolation.SNAPSHOT) {
+class TxnStore(
+    private val engine: KvEngine,
+    val defaultIsolation: Isolation = Isolation.SNAPSHOT,
+    /** 보관할 커밋 기록 수 상한. 넘으면 오래된 기록을 요약 기록 하나로 합친다 (§11.7). */
+    private val maxRetainedRecords: Int = 1_000,
+    /** 기록 하나가 들고 있을 키·범위 수 상한. 넘으면 범위 하나로 거칠게 만든다 (§11.7). */
+    private val maxKeysPerRecord: Int = 1_000,
+) {
+    init {
+        require(maxRetainedRecords >= 2) { "maxRetainedRecords는 2 이상이어야 합니다: $maxRetainedRecords" }
+        require(maxKeysPerRecord >= 1) { "maxKeysPerRecord는 1 이상이어야 합니다: $maxKeysPerRecord" }
+    }
+
     private val lock = Any()
 
     /** 마지막으로 커밋된 시각. 커밋 배치가 다 쓰인 **뒤에** 올린다 → 이 값으로 시작한 스냅샷은 배치 전체를 본다. */
@@ -54,6 +66,13 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
     private val committedSerializable = ArrayList<CommittedTxn>()
 
     /**
+     * 상한을 넘어 요약된 오래된 기록들의 합 (PostgreSQL의 summarize와 같은 발상). 읽기·쓰기 집합은 범위 하나로 거칠게,
+     * 충돌 표시는 OR, 시각은 가장 늦은 값. 간선을 실제보다 많이 보게 만들 뿐이라 이상 현상을 놓치지 않는다 (거짓 양성은 는다).
+     */
+    private var summary: CommittedTxn? = null
+    private var summarizedCount = 0L
+
+    /**
      * 시작·종료마다 하나씩 오르는 순번. "두 트랜잭션의 실행 기간이 겹쳤는가"를 판정한다.
      * 커밋 시각(ts)으로는 안 된다: 읽기 전용은 새 ts를 받지 않고, 사이에 커밋이 없으면 겹친 두 트랜잭션의 ts가 같다.
      */
@@ -65,12 +84,23 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
         /** 이 트랜잭션의 쓰기가 보이기 시작한 시각 (읽기 전용은 커밋 당시 lastCommittedTs). */
         val commitTs: Long,
         val endSeq: Long,
-        val readKeys: TreeSet<ByteArray>,
-        val readRanges: List<Pair<ByteArray, ByteArray?>>,
-        val writeKeys: TreeSet<ByteArray>,
+        val reads: KeySpan,
+        val writes: KeySpan,
         var inConflict: Boolean,
         var outConflict: Boolean,
-    )
+    ) {
+        /** 둘을 덮는 보수적 요약. 시각·순번은 늦은 쪽(겹침·간선 판정이 넓어지는 쪽)을 쓴다. */
+        fun mergedWith(other: CommittedTxn) = CommittedTxn(
+            id = -1,
+            readTs = minOf(readTs, other.readTs),
+            commitTs = maxOf(commitTs, other.commitTs),
+            endSeq = maxOf(endSeq, other.endSeq),
+            reads = reads.unionCoarse(other.reads),
+            writes = writes.unionCoarse(other.writes),
+            inConflict = inConflict || other.inConflict,
+            outConflict = outConflict || other.outConflict,
+        )
+    }
 
     fun begin(isolation: Isolation = defaultIsolation): Txn = synchronized(lock) {
         val id = txnIds.incrementAndGet()
@@ -131,8 +161,11 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
     /** 테스트·측정용: 저장된 버전 수. */
     fun versionCount(): Int = engine.scan(VersionKey.ALL, prefixEnd(VersionKey.ALL)).use { it.asSequence().count() }
 
-    /** 테스트·측정용: SSI가 들고 있는 커밋된 트랜잭션 기록 수 (진행 중인 트랜잭션이 없으면 0이어야 한다). */
-    fun retainedSerializableRecords(): Int = synchronized(lock) { committedSerializable.size }
+    /** 테스트·측정용: SSI가 들고 있는 커밋된 트랜잭션 기록 수, 요약 기록 포함 (진행 중인 트랜잭션이 없으면 0이어야 한다). */
+    fun retainedSerializableRecords(): Int = synchronized(lock) { committedSerializable.size + (if (summary != null) 1 else 0) }
+
+    /** 테스트·측정용: 지금까지 요약 기록으로 합쳐진 기록 수. */
+    fun summarizedRecords(): Long = synchronized(lock) { summarizedCount }
 
     internal fun read(key: ByteArray, readTs: Long): ByteArray? {
         val from = VersionKey.encode(key, readTs)
@@ -198,12 +231,13 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
             if (ssi != null) {
                 ssi.apply()
                 committedSerializable += txn.reads { keys, ranges ->
-                    // TreeSet(Collection) 생성자는 비교자를 복사하지 않아 ByteArray를 자연 순서로 정렬하려다 실패한다 → 비교자를 명시
                     CommittedTxn(
-                        txn.id, txn.readTs, commitTs, eventSeq + 1, byteKeySet(keys), ranges.toList(),
-                        byteKeySet(writes.keys), ssi.inConflict, ssi.outConflict,
+                        txn.id, txn.readTs, commitTs, eventSeq + 1,
+                        KeySpan.of(keys, ranges, maxKeysPerRecord), KeySpan.of(writes.keys, emptyList(), maxKeysPerRecord),
+                        ssi.inConflict, ssi.outConflict,
                     )
                 }
+                summarizeIfNeeded()
             }
         } finally {
             finish(txn)
@@ -218,8 +252,26 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
         activeReadTs.remove(txn.id)
         activeSerializable.remove(txn.id)
         val oldestActiveBegin = activeSerializable.values.minOfOrNull { it.beginSeq }
-        if (oldestActiveBegin == null) committedSerializable.clear() else committedSerializable.removeAll { it.endSeq <= oldestActiveBegin }
+        if (oldestActiveBegin == null) {
+            committedSerializable.clear()
+            summary = null
+        } else {
+            committedSerializable.removeAll { it.endSeq <= oldestActiveBegin }
+            if ((summary?.endSeq ?: Long.MAX_VALUE) <= oldestActiveBegin) summary = null
+        }
     }
+
+    /** 기록이 상한을 넘으면 오래된 절반을 요약 기록에 합친다 (매 커밋마다 합치지 않도록 절반씩). */
+    private fun summarizeIfNeeded() {
+        if (committedSerializable.size <= maxRetainedRecords) return
+        val count = committedSerializable.size - maxRetainedRecords / 2
+        val oldest = committedSerializable.subList(0, count)
+        summary = oldest.fold(summary) { acc, r -> acc?.mergedWith(r) ?: r.mergedWith(r) }
+        summarizedCount += count
+        oldest.clear()
+    }
+
+    private fun allRecords(): List<CommittedTxn> = summary?.let { listOf(it) + committedSerializable } ?: committedSerializable
 
     /** 커밋이 확정되면 다른 트랜잭션에 반영할 간선 표시. 중단하기로 하면 아무것도 반영하지 않는다. */
     private inner class SsiOutcome(val inConflict: Boolean, val outConflict: Boolean, private val effects: List<() -> Unit>) {
@@ -240,9 +292,13 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
         var outConflict = txn.outConflict
         val effects = ArrayList<() -> Unit>()
 
+        // 커밋 중인 T의 집합은 복사하지 않고 감싸기만 한다 (T는 이 스레드만 쓴다)
+        val txnReads = txn.reads { keys, ranges -> KeySpan(keys, ranges) }
+        val txnWrites = KeySpan(TreeSet(ByteKeys.COMPARATOR).apply { addAll(writeKeys) }, emptyList())
+
         // 나가는 간선 T → W: T가 읽은 것을, T 시작 이후 커밋한 W가 바꿨다
-        for (w in committedSerializable) {
-            if (w.commitTs <= txn.readTs || !txn.reads { keys, ranges -> overlaps(keys, ranges, w.writeKeys) }) continue
+        for (w in allRecords()) {
+            if (w.commitTs <= txn.readTs || !txnReads.intersects(w.writes)) continue
             if (w.outConflict) throw SerializationFailureException("직렬화 실패: 이미 커밋된 트랜잭션 ${w.id}이(가) 피벗이 됩니다 (C)")
             outConflict = true
             effects += { w.inConflict = true }
@@ -251,13 +307,14 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
         if (writeKeys.isNotEmpty()) {
             // 들어오는 간선 R → T (진행 중인 R): R이 읽은 것을 T가 바꾼다. R은 T의 쓰기를 못 본다
             for (r in activeSerializable.values) {
-                if (r === txn || !r.reads { keys, ranges -> overlaps(keys, ranges, writeKeys) }) continue
+                // R의 읽기 집합은 R의 잠금 안에서 복사 없이 감싸 비교한다
+                if (r === txn || !r.reads { keys, ranges -> KeySpan(keys, ranges).intersects(txnWrites) }) continue
                 inConflict = true
                 effects += { r.outConflict = true }
             }
             // 들어오는 간선 R → T (T가 진행되는 동안 커밋한 R — 읽기 전용 포함). R은 T의 쓰기를 못 봤다
-            for (r in committedSerializable) {
-                if (r.endSeq <= txn.beginSeq || !overlaps(r.readKeys, r.readRanges, writeKeys)) continue
+            for (r in allRecords()) {
+                if (r.endSeq <= txn.beginSeq || !r.reads.intersects(txnWrites)) continue
                 if (r.inConflict) throw SerializationFailureException("직렬화 실패: 이미 커밋된 트랜잭션 ${r.id}이(가) 피벗이 됩니다 (B)")
                 inConflict = true
                 effects += { r.outConflict = true }
@@ -268,18 +325,8 @@ class TxnStore(private val engine: KvEngine, val defaultIsolation: Isolation = I
         return SsiOutcome(inConflict, outConflict, effects)
     }
 
-    /** 읽은 키·범위가 쓴 키와 겹치는가. 범위 [from, to)는 쓴 키 집합의 부분 집합으로 검사한다. */
-    private fun overlaps(readKeys: Set<ByteArray>, readRanges: List<Pair<ByteArray, ByteArray?>>, writeKeys: java.util.NavigableSet<ByteArray>): Boolean {
-        if (readKeys.any { it in writeKeys }) return true
-        return readRanges.any { (from, to) ->
-            (if (to == null) writeKeys.tailSet(from, true) else writeKeys.subSet(from, true, to, false)).isNotEmpty()
-        }
-    }
-
     private companion object {
         val LAST_TS = "t/last".toByteArray()
-
-        fun byteKeySet(keys: Collection<ByteArray>) = TreeSet(ByteKeys.COMPARATOR).apply { addAll(keys) }
     }
 }
 
@@ -377,7 +424,7 @@ class Txn internal constructor(
     override fun close() = rollback()
 
     /** 읽기 집합을 안전하게 들여다본다 (다른 스레드의 커밋이 부른다). */
-    internal fun <T> reads(block: (Set<ByteArray>, List<Pair<ByteArray, ByteArray?>>) -> T): T = synchronized(this) { block(readKeys, readRanges) }
+    internal fun <T> reads(block: (TreeSet<ByteArray>, List<Pair<ByteArray, ByteArray?>>) -> T): T = synchronized(this) { block(readKeys, readRanges) }
 
     private fun checkActive() = check(!finished) { "끝난 트랜잭션입니다 (id=$id)" }
 }

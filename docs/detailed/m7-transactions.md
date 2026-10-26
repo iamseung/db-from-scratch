@@ -106,7 +106,11 @@ class MvccKvEngine(store: TxnStore) : KvEngine   // 연산 하나 = 트랜잭션
 
 이 어댑터로 M1에서 만든 계약·무작위·크래시 하네스를 MVCC 계층에 그대로 적용한다. 세 저장 엔진 각각 위에서.
 
-## 8. SQL·문서 계층과의 연결 (이번에 하지 않음)
+## 8. SQL·문서 계층과의 연결
+
+> **SQL은 연결했다 (2026-10-26)**: `BEGIN` / `COMMIT` / `ROLLBACK` — [m6-sql.md §10](m6-sql.md). 문서 계층은 아직 연결하지 않았다.
+
+(처음 계획)
 
 `Database`와 `DocumentStore`는 `KvEngine`에 의존한다. `Txn`이 KvEngine과 같은 연산을 제공하므로, 문장마다 Txn을 열고 닫게 바꾸면 SQL `BEGIN … COMMIT`이 된다. M8에서 필요하면 문서 계층의 다중 문서 원자성 비교용으로만 연결한다.
 

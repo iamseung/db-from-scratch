@@ -23,8 +23,11 @@ abstract class SqlContractTest {
 
     abstract fun openEngine(dir: Path): KvEngine
 
+    /** true면 같은 테스트를 MVCC 트랜잭션 모드(문장마다 자동 커밋)에서 돌린다. 결과는 같아야 한다. */
+    open val transactional: Boolean = false
+
     /** Unit만 받는다. 테스트 메서드가 값을 돌려주면 JUnit이 조용히 건너뛴다 (M5에서 겪음). */
-    private fun withDb(block: (Database) -> Unit) = openEngine(dir).use { block(Database(it)) }
+    private fun withDb(block: (Database) -> Unit) = openEngine(dir).use { block(Database(it, transactional)) }
 
     private fun i(v: Long) = Value.IntV(v)
 
@@ -254,5 +257,25 @@ class LsmSqlTest : SqlContractTest() {
 }
 
 class BTreeSqlTest : SqlContractTest() {
+    override fun openEngine(dir: Path): KvEngine = BTreeEngine.open(BTreeOptions(dir, pageSize = 1024, bufferPoolPages = 32, syncPolicy = SyncPolicy.MANUAL))
+}
+
+// ---- 같은 계약을 트랜잭션 모드(MVCC 위, 문장마다 자동 커밋)에서 ----
+
+class TxLogSqlTest : SqlContractTest() {
+    override val transactional = true
+
+    override fun openEngine(dir: Path): KvEngine = LogEngine.open(LogEngineOptions(dir, syncPolicy = SyncPolicy.MANUAL))
+}
+
+class TxLsmSqlTest : SqlContractTest() {
+    override val transactional = true
+
+    override fun openEngine(dir: Path): KvEngine = LsmEngine.open(LsmOptions(dir, memtableSizeBytes = 4096, syncPolicy = SyncPolicy.MANUAL))
+}
+
+class TxBTreeSqlTest : SqlContractTest() {
+    override val transactional = true
+
     override fun openEngine(dir: Path): KvEngine = BTreeEngine.open(BTreeOptions(dir, pageSize = 1024, bufferPoolPages = 32, syncPolicy = SyncPolicy.MANUAL))
 }

@@ -78,6 +78,12 @@ sealed interface Statement {
 
     /** NULL 허용 열만 추가한다 (기존 행은 NULL). */
     data class AlterAddColumn(val table: String, val column: ColumnDef) : Statement
+
+    data object Begin : Statement
+
+    data object Commit : Statement
+
+    data object Rollback : Statement
 }
 
 // ---------- 렉서 ----------
@@ -91,7 +97,7 @@ object Lexer {
         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "IS", "TRUE", "FALSE", "INSERT", "INTO", "VALUES",
         "CREATE", "TABLE", "INDEX", "ON", "PRIMARY", "KEY", "INT", "INTEGER", "BIGINT", "TEXT", "BOOL", "BOOLEAN",
         "UPDATE", "SET", "DELETE", "JOIN", "INNER", "ORDER", "BY", "ASC", "DESC", "LIMIT", "EXPLAIN", "AS",
-        "ALTER", "ADD", "COLUMN",
+        "ALTER", "ADD", "COLUMN", "BEGIN", "TRANSACTION", "COMMIT", "ROLLBACK",
     )
 
     fun tokenize(sql: String): List<Token> {
@@ -175,7 +181,10 @@ class Parser private constructor(private val tokens: List<Token>) {
         acceptKeyword("DELETE") -> delete()
         acceptKeyword("EXPLAIN") -> { expectKeyword("SELECT"); Statement.Explain(select()) }
         acceptKeyword("ALTER") -> alterTable()
-        else -> fail("문장이 필요합니다 (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, EXPLAIN)")
+        acceptKeyword("BEGIN") -> Statement.Begin.also { acceptKeyword("TRANSACTION") }
+        acceptKeyword("COMMIT") -> Statement.Commit
+        acceptKeyword("ROLLBACK") -> Statement.Rollback
+        else -> fail("문장이 필요합니다 (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, EXPLAIN, BEGIN, COMMIT, ROLLBACK)")
     }
 
     private fun createTable(): Statement.CreateTable {

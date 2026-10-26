@@ -11,11 +11,13 @@ import java.nio.file.Path
 
 /**
  * ./gradlew :sql:run --args="--engine=lsm --dir=data/sql" -q --console=plain
- * 문장은 세미콜론으로 끝낸다. 빈 줄이나 \q로 끝낸다.
+ * 기본은 트랜잭션 모드(BEGIN … COMMIT 사용 가능). --mode=raw면 M6의 비트랜잭션 모드 (데이터 파일 형식이 달라 서로 열 수 없다).
+ * 문장은 세미콜론으로 끝낸다. \q로 끝낸다.
  */
 fun main(args: Array<String>) {
     val options = args.associate { it.removePrefix("--").substringBefore('=') to it.substringAfter('=', "") }
-    val dir = Path.of(options["dir"] ?: "data/sql-${options["engine"] ?: "lsm"}")
+    val transactional = options["mode"] != "raw"
+    val dir = Path.of(options["dir"] ?: "data/sql-${options["engine"] ?: "lsm"}${if (transactional) "" else "-raw"}")
     val engine: KvEngine = when (val name = options["engine"] ?: "lsm") {
         "log" -> LogEngine.open(LogEngineOptions(dir))
         "lsm" -> LsmEngine.open(LsmOptions(dir))
@@ -23,11 +25,11 @@ fun main(args: Array<String>) {
         else -> error("엔진은 log | lsm | btree 중 하나입니다: $name")
     }
     engine.use {
-        val db = Database(it)
-        println("mydb (${options["engine"] ?: "lsm"}, $dir) — 문장은 ;로 끝내세요. \\q로 종료")
+        val session = Database(it, transactional).session()
+        println("mydb (${options["engine"] ?: "lsm"}, ${if (transactional) "트랜잭션 모드" else "raw 모드"}, $dir) — 문장은 ;로 끝내세요. \\q로 종료")
         val buffer = StringBuilder()
         while (true) {
-            print(if (buffer.isEmpty()) "mydb> " else "   -> ")
+            print(if (buffer.isNotEmpty()) "   -> " else if (session.inTransaction) "mydb*> " else "mydb> ")
             val line = readlnOrNull() ?: break
             if (line.trim() == "\\q") break
             buffer.appendLine(line)
@@ -35,7 +37,7 @@ fun main(args: Array<String>) {
             val sql = buffer.toString()
             buffer.clear()
             try {
-                println(render(db.execute(sql)))
+                println(render(session.execute(sql)))
             } catch (e: SqlException) {
                 println("오류: ${e.message}")
             }

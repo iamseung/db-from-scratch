@@ -27,7 +27,8 @@
 | 두 테이블 `JOIN … ON a = b` (내부 조인) | 3개 이상 조인 순서 최적화, 외부 조인 |
 | `ORDER BY` 한 열, `LIMIT` | |
 | 규칙 기반 플래너 | 비용 기반 옵티마이저, 통계 |
-| 문장 단위 원자성 (문장 하나 = `writeBatch` 하나) | 여러 문장 트랜잭션 (M7) |
+| 문장 단위 원자성 (문장 하나 = `writeBatch` 하나) | |
+| `BEGIN` / `COMMIT` / `ROLLBACK` (M7 이후 추가, §10) | 세이브포인트, 격리 수준 선택 |
 
 ## 3. KV 레이아웃
 
@@ -173,3 +174,39 @@ sealed interface Result {
 6. ✅ JOIN
 7. ✅ 계약 테스트 3엔진, 차분 무작위 테스트, 돌연변이 검증
 8. ✅ REPL (`./gradlew :sql:run --args="--engine=lsm" -q --console=plain`)
+
+## 10. 트랜잭션 연결 — BEGIN · COMMIT · ROLLBACK (M7 이후 추가, 2026-10-26)
+
+M7의 MVCC(`TxnStore`)를 SQL에 연결했다.
+
+### 10.1 구조
+
+```
+Database(engine, transactional)
+ ├─ Session            ← 연결 하나. 트랜잭션 상태(열린 Txn)를 가진다
+ │    BEGIN    → txn = store.begin()
+ │    문장     → Executor(TxnKvView(txn)).execute(문장)     (트랜잭션 안)
+ │              store.run { Executor(TxnKvView(it)).execute(문장) }   (트랜잭션 밖: 자동 커밋, 충돌 시 재시도)
+ │    COMMIT   → txn.commit()  (쓰기 충돌이면 SqlException "직렬화 실패", 트랜잭션 버림)
+ │    ROLLBACK → txn.rollback()
+ └─ Executor           ← 기존 실행 코드 그대로. KvEngine만 본다
+```
+
+- **기존 실행 코드를 고치지 않았다.** `Executor`는 `KvEngine`에만 의존하므로, 트랜잭션을 `KvEngine`처럼 보이게 하는 `TxnKvView`를 넘기면 된다. 읽기는 트랜잭션 스냅샷 + 자기 쓰기, 쓰기는 커밋까지 버퍼링된다. 카탈로그도 같은 뷰로 읽고 쓰므로 **DDL도 트랜잭션 안에서 되돌려진다**.
+- **두 모드**: `transactional = false`(기본, M6 그대로)와 `true`(MVCC). MVCC는 키를 버전 형식으로 저장하므로 두 모드의 데이터 파일은 서로 열 수 없다. M6·M8 측정은 비트랜잭션 모드 값이다. REPL은 트랜잭션 모드가 기본이다(`--mode=raw`로 바꿈).
+
+### 10.2 의미
+
+| 상황 | 동작 |
+|---|---|
+| 트랜잭션 안의 문장이 실패 (제약 위반 등) | 그 문장만 무효, 트랜잭션은 열린 채. 문장이 KV 변경을 모아 마지막에 한 번에 쓰므로 실패한 문장의 일부가 남지 않는다 (PostgreSQL은 트랜잭션 전체를 실패 상태로 만든다 — 여기서는 MySQL 쪽 동작) |
+| 두 트랜잭션이 같은 행을 바꿈 | 나중 COMMIT이 `직렬화 실패`. 그 트랜잭션의 모든 변경이 버려지고, 애플리케이션이 처음부터 다시 실행한다 |
+| 트랜잭션 밖의 문장 | 문장마다 자동 커밋. 충돌이면 새 스냅샷으로 **문장을 자동 재실행**한다 (문장 하나는 다시 실행해도 안전) |
+| 격리 수준 | 스냅샷 격리. write skew는 막지 않는다(M7 §6). `SELECT … FOR UPDATE` 없음 |
+| 중첩 BEGIN, BEGIN 없는 COMMIT | 오류 |
+
+### 10.3 검증
+
+- 기존 SQL 계약 테스트 11종을 트랜잭션 모드에서 세 엔진으로 다시 돌림 (자동 커밋 경로)
+- 새 테스트 7종 × 엔진 3: 커밋 전 비가시성, ROLLBACK(DDL 포함), 트랜잭션 스냅샷, 같은 행 동시 갱신 → 나중 COMMIT 실패, **M8 D5의 "항목 없는 주문"을 트랜잭션으로 막기**, 제어 오류, 세션 8개 SQL 동시 이체(충돌 후 재시도 760 ~ 830회 발생, 합계 보존)
+- 돌연변이: (a) 트랜잭션 안 문장을 자동 커밋으로 실행 → 18개 실패, (b) 트랜잭션 뷰가 배치의 첫 연산만 반영 → 51개 실패

@@ -14,14 +14,14 @@ sealed interface Result {
 }
 
 /**
- * KvEngine 위의 SQL 데이터베이스. 문장 하나가 만드는 모든 KV 변경은 writeBatch 한 번이라 문장 단위로 원자적이다.
- * 여러 문장에 걸친 트랜잭션은 M7. 단일 쓰기 스레드 결정에 따라 execute는 @Synchronized다.
+ * 문장 하나를 주어진 KV 뷰 위에서 실행한다. 문장이 만드는 모든 KV 변경은 writeBatch 한 번이라 문장 단위로 원자적이다.
+ * 뷰는 저장 엔진 그 자체(비트랜잭션 모드)이거나 트랜잭션(Txn)을 KvEngine처럼 보이게 한 것이다 — 실행 코드는 둘을 구분하지 않는다.
+ * 상태가 없으므로 문장마다 새로 만든다. 세션·트랜잭션 관리는 [Database]·[Session].
  */
-class Database(private val engine: KvEngine) {
+internal class Executor(private val engine: KvEngine) {
     private val catalog = Catalog(engine)
 
-    @Synchronized
-    fun execute(sql: String): Result = when (val statement = Parser.parse(sql)) {
+    fun execute(statement: Statement): Result = when (statement) {
         is Statement.CreateTable -> createTable(statement)
         is Statement.CreateIndex -> createIndex(statement)
         is Statement.Insert -> insert(statement)
@@ -30,10 +30,8 @@ class Database(private val engine: KvEngine) {
         is Statement.Delete -> delete(statement)
         is Statement.Explain -> Result.Plan(planSelect(statement.select).first.explain().trimEnd())
         is Statement.AlterAddColumn -> alterAddColumn(statement)
+        Statement.Begin, Statement.Commit, Statement.Rollback -> error("트랜잭션 제어 문장은 Session이 처리한다")
     }
-
-    /** 편의: SELECT 결과 행만. */
-    fun query(sql: String): List<List<Value>> = (execute(sql) as Result.Rows).rows
 
     private fun createTable(s: Statement.CreateTable): Result {
         if (catalog.table(s.name) != null) throw SqlException("이미 있는 테이블입니다: ${s.name}")

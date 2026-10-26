@@ -5,6 +5,8 @@ plugins {
 dependencies {
     // SQL 계층은 KvEngine 인터페이스에만 의존한다. REPL과 테스트에서 세 엔진을 꽂는다
     "api"(project(":kv-api"))
+    // BEGIN … COMMIT: M7 MVCC 트랜잭션 위에서 문장을 실행한다
+    "implementation"(project(":txn"))
     "implementation"(project(":engine-log"))
     "implementation"(project(":engine-lsm"))
     "implementation"(project(":engine-btree"))

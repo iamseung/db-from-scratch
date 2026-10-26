@@ -67,7 +67,7 @@ Project o.id, o.total, i.product, i.qty, i.price
 
 ## D5. 일관성 경계
 
-[`ConsistencyBoundaryTest`](../../sql/src/test/kotlin/dev/mydb/sql/ConsistencyBoundaryTest.kt): 주문 INSERT 뒤 항목 INSERT가 (중복 키로) 실패하면 관계형에는 **항목 없는 주문**이 남는다. 원자성의 단위가 문장이고 주문·항목은 두 문장이기 때문이다. 문서형은 주문과 항목이 문서 하나라 그런 중간 상태가 없다. 관계형에서 이것을 막는 것이 M7의 다중 키 트랜잭션이다(SQL에 `BEGIN … COMMIT`으로 연결하는 것은 이번 범위 밖).
+[`ConsistencyBoundaryTest`](../../sql/src/test/kotlin/dev/mydb/sql/ConsistencyBoundaryTest.kt): 주문 INSERT 뒤 항목 INSERT가 (중복 키로) 실패하면 관계형에는 **항목 없는 주문**이 남는다. 원자성의 단위가 문장이고 주문·항목은 두 문장이기 때문이다. 문서형은 주문과 항목이 문서 하나라 그런 중간 상태가 없다. 관계형에서 이것을 막는 것이 M7의 다중 키 트랜잭션이다. **이후 SQL에 `BEGIN … COMMIT`을 연결했고**, 같은 상황을 `ROLLBACK`으로 되돌리는 테스트가 있다([`SqlTransactionTest`](../../sql/src/test/kotlin/dev/mydb/sql/SqlTransactionTest.kt) "여러 문장을 원자적으로 묶어 중간 실패를 되돌린다"). 이 측정의 수치는 비트랜잭션 모드 값이다.
 
 ## 정리
 

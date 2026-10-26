@@ -210,3 +210,7 @@ Database(engine, transactional)
 - 기존 SQL 계약 테스트 11종을 트랜잭션 모드에서 세 엔진으로 다시 돌림 (자동 커밋 경로)
 - 새 테스트 7종 × 엔진 3: 커밋 전 비가시성, ROLLBACK(DDL 포함), 트랜잭션 스냅샷, 같은 행 동시 갱신 → 나중 COMMIT 실패, **M8 D5의 "항목 없는 주문"을 트랜잭션으로 막기**, 제어 오류, 세션 8개 SQL 동시 이체(충돌 후 재시도 760 ~ 830회 발생, 합계 보존)
 - 돌연변이: (a) 트랜잭션 안 문장을 자동 커밋으로 실행 → 18개 실패, (b) 트랜잭션 뷰가 배치의 첫 연산만 반영 → 51개 실패
+
+### 10.4 CREATE INDEX · ALTER TABLE과 행 쓰기의 경쟁 (문서 계층 연결 때 발견)
+
+`CREATE INDEX`를 하는 트랜잭션과 행을 쓰는 트랜잭션은 서로 다른 키를 쓸 수 있어 스냅샷 격리에서 둘 다 커밋되고, 그 행이 인덱스에서 빠진다(자세한 설명은 [m5-document.md §10.2](m5-document.md)). 대응: 행을 쓰는 문장(INSERT · UPDATE · DELETE)은 테이블 정의 키를 지켜보고, `CREATE INDEX` · `ALTER TABLE`은 테이블 행 범위를 지켜본다(`Txn.watch` / `watchRange`). 테스트 "CREATE INDEX와 동시에 쓴 행이 인덱스에서 빠지지 않는다 - 양방향".

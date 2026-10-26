@@ -43,6 +43,7 @@ DURABILITY   storage-common (WAL, fsync)
 - [x] M5 문서 계층 (JSON 컬렉션, 경로 필터, 보조 인덱스, explain) → [측정](docs/measurements/m5-document.md)
 - [x] M6 관계형 계층 (SQL 파서, 규칙 기반 planner, Volcano executor, JOIN, EXPLAIN, REPL)
 - [x] M7 트랜잭션 (MVCC 스냅샷 격리, write skew 재현, GC) → [측정](docs/measurements/m7-transactions.md)
+  - [x] 문서 계층 다중 문서 트랜잭션 (`transaction { }` / `begin()`) ([설계](docs/detailed/m5-document.md#10-트랜잭션-연결-2026-10-26))
   - [x] SQL `BEGIN` / `COMMIT` / `ROLLBACK` 연결 ([설계](docs/detailed/m6-sql.md#10-트랜잭션-연결--begin--commit--rollback-m7-이후-추가-2026-10-26))
 - [x] M8 비교 실험 2: 데이터 모델 (관계형 vs 문서형) → [측정](docs/measurements/m8-data-models.md)
 

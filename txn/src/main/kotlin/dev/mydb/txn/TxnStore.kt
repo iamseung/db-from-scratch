@@ -115,12 +115,25 @@ class TxnStore(private val engine: KvEngine) {
         return result
     }
 
-    internal fun commit(txn: Txn, writes: TreeMap<ByteArray, ByteArray?>) = synchronized(lock) {
+    internal fun commit(
+        txn: Txn,
+        writes: TreeMap<ByteArray, ByteArray?>,
+        watchedKeys: Collection<ByteArray>,
+        watchedRanges: List<Pair<ByteArray, ByteArray?>>,
+    ) = synchronized(lock) {
         try {
-            for (key in writes.keys) {
-                // [(K, ∞), (K, readTs)) 에 버전이 있으면 readTs 이후에 누군가 커밋한 것이다
+            // 쓴 키 + 지켜본 키: [(K, ∞), (K, readTs)) 에 버전이 있으면 readTs 이후에 누군가 커밋한 것이다
+            for (key in writes.keys + watchedKeys) {
                 val newer = engine.scan(VersionKey.userPrefix(key), VersionKey.encode(key, txn.readTs)).use { it.hasNext() }
                 if (newer) throw WriteConflictException("키 ${String(key)}가 이 트랜잭션 시작(ts=${txn.readTs}) 이후에 커밋되었습니다")
+            }
+            // 지켜본 범위: 범위 안 어떤 키든 readTs 이후 버전이 있으면 충돌 (범위 크기에 비례하는 검사)
+            for ((from, to) in watchedRanges) {
+                val storageTo = to?.let { VersionKey.rangeBound(it) } ?: prefixEnd(VersionKey.ALL)
+                val changed = engine.scan(VersionKey.rangeBound(from), storageTo).use { iterator ->
+                    iterator.asSequence().any { VersionKey.decode(it.key).second > txn.readTs }
+                }
+                if (changed) throw WriteConflictException("범위 [${String(from)}, ${to?.let { String(it) } ?: "끝"})가 이 트랜잭션 시작(ts=${txn.readTs}) 이후에 바뀌었습니다")
             }
             val commitTs = lastCommittedTs + 1
             val ops = writes.map { (key, value) ->
@@ -143,6 +156,14 @@ class TxnStore(private val engine: KvEngine) {
 class Txn internal constructor(private val store: TxnStore, internal val id: Long, val readTs: Long) : AutoCloseable {
     /** 쓰기 집합. null = 삭제. 커밋 전까지 다른 트랜잭션에 보이지 않는다. */
     private val writes = TreeMap<ByteArray, ByteArray?>(ByteKeys.COMPARATOR)
+
+    /**
+     * 커밋 때 "시작 이후 아무도 바꾸지 않았는지" 검증할 키·범위 (낙관적 동시성 제어의 읽기 검증).
+     * 스냅샷 격리는 쓰기-쓰기 충돌만 잡는다. 읽은 것에 의존하는 쓰기(예: 인덱스 정의를 읽고 문서를 쓰기)를 지키려면
+     * 그 읽기를 여기 등록한다. 등록한 것만 검증하므로 write skew 전반을 막는 SSI는 아니다.
+     */
+    private val watchedKeys = TreeMap<ByteArray, Unit>(ByteKeys.COMPARATOR)
+    private val watchedRanges = ArrayList<Pair<ByteArray, ByteArray?>>()
     private var finished = false
 
     fun get(key: ByteArray): ByteArray? {
@@ -170,10 +191,23 @@ class Txn internal constructor(private val store: TxnStore, internal val id: Lon
         return visible.map { (k, v) -> k to v.copyOf() }
     }
 
+    /** 커밋 때 [key]가 이 트랜잭션 시작 이후 바뀌었으면 WriteConflictException. */
+    fun watch(key: ByteArray) {
+        checkActive()
+        watchedKeys[key.copyOf()] = Unit
+    }
+
+    /** 커밋 때 [from, to) 안의 어떤 키라도 시작 이후 바뀌었으면 WriteConflictException. */
+    fun watchRange(from: ByteArray, to: ByteArray?) {
+        checkActive()
+        watchedRanges += from.copyOf() to to?.copyOf()
+    }
+
+    /** 쓰기가 없으면 검증할 것도 없다 (읽기 전용은 아무것도 바꾸지 않으므로 이상 현상을 만들 수 없다). */
     fun commit() {
         checkActive()
         finished = true
-        if (writes.isEmpty()) store.end(this) else store.commit(this, writes)
+        if (writes.isEmpty()) store.end(this) else store.commit(this, writes, watchedKeys.keys, watchedRanges)
     }
 
     fun rollback() {

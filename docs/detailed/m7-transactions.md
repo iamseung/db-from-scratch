@@ -108,7 +108,8 @@ class MvccKvEngine(store: TxnStore) : KvEngine   // 연산 하나 = 트랜잭션
 
 ## 8. SQL·문서 계층과의 연결
 
-> **SQL은 연결했다 (2026-10-26)**: `BEGIN` / `COMMIT` / `ROLLBACK` — [m6-sql.md §10](m6-sql.md). 문서 계층은 아직 연결하지 않았다.
+> **SQL과 문서 계층 모두 연결했다 (2026-10-26)**: SQL `BEGIN` / `COMMIT` / `ROLLBACK` — [m6-sql.md §10](m6-sql.md), 문서 `transaction { }` / `begin()` — [m5-document.md §10](m5-document.md).
+> 이때 **읽기 검증**(`Txn.watch`, `Txn.watchRange`)을 추가했다. 스냅샷 격리가 놓치는 "인덱스 생성 ↔ 문서·행 쓰기" 경쟁을 막기 위해서다. 등록한 읽기만 커밋 때 검증하므로 SSI 전체는 아니다(§6 write skew 일반은 여전히 막지 않는다).
 
 (처음 계획)
 

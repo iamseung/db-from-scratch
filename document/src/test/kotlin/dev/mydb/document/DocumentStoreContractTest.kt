@@ -26,6 +26,9 @@ abstract class DocumentStoreContractTest {
 
     abstract fun openEngine(dir: Path): KvEngine
 
+    /** true면 같은 테스트를 MVCC 트랜잭션 모드(연산마다 자동 커밋)에서 돌린다. 결과는 같아야 한다. */
+    open val transactional: Boolean = false
+
     private fun obj(json: String) = Json.parseObject(json)
 
     private fun num(n: Number) = JsonValue.Num(n.toDouble())
@@ -35,7 +38,7 @@ abstract class DocumentStoreContractTest {
     private fun ids(docs: List<DocumentStore.Document>) = docs.map { it.id }
 
     /** Unit만 받는다. 테스트 메서드가 값을 돌려주면 JUnit이 테스트로 인식하지 않고 조용히 건너뛴다. */
-    private fun withStore(block: (DocumentStore) -> Unit) = openEngine(dir).use { block(DocumentStore(it)) }
+    private fun withStore(block: (DocumentStore) -> Unit) = openEngine(dir).use { block(DocumentStore(it, transactional)) }
 
     @Test
     fun `구조가 서로 다른 문서들을 한 컬렉션에서 필터 조회한다`() = withStore { store ->
@@ -202,5 +205,25 @@ class LsmDocumentStoreTest : DocumentStoreContractTest() {
 }
 
 class BTreeDocumentStoreTest : DocumentStoreContractTest() {
+    override fun openEngine(dir: Path): KvEngine = BTreeEngine.open(BTreeOptions(dir, pageSize = 1024, bufferPoolPages = 32, syncPolicy = SyncPolicy.MANUAL))
+}
+
+// ---- 같은 계약을 트랜잭션 모드(MVCC 위, 연산마다 자동 커밋)에서 ----
+
+class TxLogDocumentStoreTest : DocumentStoreContractTest() {
+    override val transactional = true
+
+    override fun openEngine(dir: Path): KvEngine = LogEngine.open(LogEngineOptions(dir, syncPolicy = SyncPolicy.MANUAL))
+}
+
+class TxLsmDocumentStoreTest : DocumentStoreContractTest() {
+    override val transactional = true
+
+    override fun openEngine(dir: Path): KvEngine = LsmEngine.open(LsmOptions(dir, memtableSizeBytes = 4096, syncPolicy = SyncPolicy.MANUAL))
+}
+
+class TxBTreeDocumentStoreTest : DocumentStoreContractTest() {
+    override val transactional = true
+
     override fun openEngine(dir: Path): KvEngine = BTreeEngine.open(BTreeOptions(dir, pageSize = 1024, bufferPoolPages = 32, syncPolicy = SyncPolicy.MANUAL))
 }

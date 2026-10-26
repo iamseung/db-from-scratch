@@ -1,11 +1,8 @@
 package dev.mydb.sql
 
-import dev.mydb.kv.EngineStats
 import dev.mydb.kv.KvEngine
-import dev.mydb.kv.KvEntry
-import dev.mydb.kv.KvIterator
-import dev.mydb.kv.WriteOp
 import dev.mydb.txn.Txn
+import dev.mydb.txn.TxnKvView
 import dev.mydb.txn.TxnStore
 import dev.mydb.txn.WriteConflictException
 
@@ -80,40 +77,4 @@ class Session internal constructor(private val db: Database) {
         }
         else -> txn?.let { Executor(TxnKvView(it)).execute(statement) } ?: db.autocommit(statement)
     }
-}
-
-/**
- * 트랜잭션을 KvEngine처럼 보이게 하는 어댑터. Executor는 이것과 저장 엔진을 구분하지 않는다.
- * 읽기는 트랜잭션의 스냅샷 + 자기 쓰기, 쓰기는 커밋 전까지 트랜잭션 안에 버퍼링된다.
- */
-internal class TxnKvView(private val txn: Txn) : KvEngine {
-    override fun get(key: ByteArray): ByteArray? = txn.get(key)
-
-    override fun put(key: ByteArray, value: ByteArray) = txn.put(key, value)
-
-    override fun delete(key: ByteArray) = txn.delete(key)
-
-    override fun writeBatch(ops: List<WriteOp>) = ops.forEach { op ->
-        when (op) {
-            is WriteOp.Put -> txn.put(op.key, op.value)
-            is WriteOp.Delete -> txn.delete(op.key)
-        }
-    }
-
-    override fun scan(from: ByteArray, to: ByteArray?): KvIterator {
-        val entries = txn.scan(from, to).iterator()
-        return object : KvIterator {
-            override fun hasNext() = entries.hasNext()
-
-            override fun next() = entries.next().let { (k, v) -> KvEntry(k, v) }
-
-            override fun close() = Unit
-        }
-    }
-
-    override fun flush() = Unit
-
-    override fun stats(): EngineStats = throw UnsupportedOperationException("트랜잭션 뷰에는 엔진 통계가 없습니다")
-
-    override fun close() = Unit
 }

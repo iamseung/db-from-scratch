@@ -2,6 +2,7 @@ package dev.mydb.sql
 
 import dev.mydb.kv.KvEngine
 import dev.mydb.kv.WriteOp
+import dev.mydb.txn.TxnKvView
 
 sealed interface Result {
     data class Rows(val columns: List<String>, val rows: List<List<Value>>) : Result
@@ -33,6 +34,20 @@ internal class Executor(private val engine: KvEngine) {
         Statement.Begin, Statement.Commit, Statement.Rollback -> error("트랜잭션 제어 문장은 Session이 처리한다")
     }
 
+    /**
+     * 트랜잭션 모드의 스키마 변경과 행 쓰기 사이의 이상 현상 방지 (스냅샷 격리는 서로 다른 키를 쓴 두 트랜잭션을 충돌로 보지 않는다):
+     * - 행을 쓰는 문장은 테이블 정의를 읽고 그에 맞춰 인덱스 항목을 쓴다 → 테이블 정의 키를 지켜본다
+     * - CREATE INDEX · ALTER TABLE은 자기 스냅샷의 행으로 인덱스를 채우거나 행을 다시 쓴다 → 테이블의 행 범위를 지켜본다
+     * 커밋 때 지켜본 것이 바뀌었으면 충돌이다. 비트랜잭션 모드는 문장이 직렬화되므로 할 일이 없다.
+     */
+    private fun watchSchema(table: TableDef) {
+        (engine as? TxnKvView)?.watch(catalog.key(table.name))
+    }
+
+    private fun watchRows(table: TableDef) {
+        (engine as? TxnKvView)?.watchRange(table.rowPrefix, prefixEnd(table.rowPrefix))
+    }
+
     private fun createTable(s: Statement.CreateTable): Result {
         if (catalog.table(s.name) != null) throw SqlException("이미 있는 테이블입니다: ${s.name}")
         val pks = s.columns.count { it.primaryKey }
@@ -50,6 +65,7 @@ internal class Executor(private val engine: KvEngine) {
         val column = table.columnIndex(s.column) ?: throw SqlException("없는 열입니다: ${s.table}.${s.column}")
         if (table.indexes.any { it.name == s.name }) throw SqlException("이미 있는 인덱스입니다: ${s.name}")
         if (column == table.pk || table.indexOn(column) != null) throw SqlException("이미 인덱스가 있는 열입니다: ${s.column}")
+        watchRows(table)
         val id = catalog.nextId()
         val index = IndexDef(id, s.name, column)
         val updated = table.withIndex(index)
@@ -67,6 +83,7 @@ internal class Executor(private val engine: KvEngine) {
     private fun alterAddColumn(s: Statement.AlterAddColumn): Result {
         val table = catalog.require(s.table)
         if (table.columnIndex(s.column.name) != null) throw SqlException("이미 있는 열입니다: ${s.table}.${s.column.name}")
+        watchRows(table)
         val updated = TableDef(table.id, table.name, table.columns + s.column, table.indexes)
         val ops = catalog.saveOps(updated, catalog.nextId()).toMutableList()
         var rewritten = 0
@@ -80,6 +97,7 @@ internal class Executor(private val engine: KvEngine) {
 
     private fun insert(s: Statement.Insert): Result {
         val table = catalog.require(s.table)
+        watchSchema(table)
         val targets = s.columns?.map { table.columnIndex(it) ?: throw SqlException("없는 열입니다: ${s.table}.$it") } ?: table.columns.indices.toList()
         if (targets.toSet().size != targets.size) throw SqlException("INSERT 열이 중복됩니다")
         val empty = Scope(emptyList())
@@ -105,6 +123,7 @@ internal class Executor(private val engine: KvEngine) {
      */
     private fun update(s: Statement.Update): Result {
         val table = catalog.require(s.table)
+        watchSchema(table)
         val scope = Scope(listOf(table.name to table))
         val assignments = s.assignments.map { (name, expr) -> (table.columnIndex(name) ?: throw SqlException("없는 열입니다: ${s.table}.$name")) to expr }
         val targets = matchingRows(table, s.where).toList()
@@ -127,6 +146,7 @@ internal class Executor(private val engine: KvEngine) {
 
     private fun delete(s: Statement.Delete): Result {
         val table = catalog.require(s.table)
+        watchSchema(table)
         val targets = matchingRows(table, s.where).toList()
         val ops = ArrayList<WriteOp>()
         for (row in targets) {

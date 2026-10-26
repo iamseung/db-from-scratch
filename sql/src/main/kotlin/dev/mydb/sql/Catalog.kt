@@ -82,7 +82,8 @@ class Catalog(private val engine: KvEngine) {
         dev.mydb.kv.WriteOp.Put(key(def.name), def.encode()),
     )
 
-    private fun key(name: String) = "s/t/".toByteArray() + name.toByteArray(Charsets.UTF_8)
+    /** 테이블 정의 키. 트랜잭션 모드에서 행을 쓰는 문장이 지켜본다 (Executor). */
+    fun key(name: String) = "s/t/".toByteArray() + name.toByteArray(Charsets.UTF_8)
 
     private companion object {
         val NEXT = "s/next".toByteArray()

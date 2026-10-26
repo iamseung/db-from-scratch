@@ -120,6 +120,26 @@ abstract class SqlTransactionTest {
         assertEquals(0, db.query("SELECT * FROM orders").size, "주문도 남지 않는다")
     }
 
+    /** 문서 계층과 같은 이상 현상: CREATE INDEX와 행 쓰기가 서로 다른 키를 써서 둘 다 커밋되면 그 행이 인덱스에서 빠진다. */
+    @Test
+    fun `CREATE INDEX와 동시에 쓴 행이 인덱스에서 빠지지 않는다 - 양방향`() = withDb { db ->
+        db.seedAccounts()
+        val indexer = db.session()
+        indexer.run("BEGIN", "CREATE INDEX idx_owner ON accounts (owner)")
+        db.execute("INSERT INTO accounts VALUES (3, 'park', 5)")
+        assertFailsWith<SqlException> { indexer.execute("COMMIT") }
+        db.execute("CREATE INDEX idx_owner ON accounts (owner)")
+        assertEquals(listOf(listOf(i(3))), db.query("SELECT id FROM accounts WHERE owner = 'park'"))
+        assertTrue("IndexScan idx_owner" in (db.execute("EXPLAIN SELECT id FROM accounts WHERE owner = 'park'") as Result.Plan).text)
+
+        val writer = db.session()
+        writer.run("BEGIN", "INSERT INTO accounts VALUES (4, 'choi', 1)")
+        db.execute("ALTER TABLE accounts ADD COLUMN memo TEXT")
+        assertFailsWith<SqlException> { writer.execute("COMMIT") }
+        db.execute("INSERT INTO accounts VALUES (4, 'choi', 1, NULL)")
+        assertEquals(listOf(listOf(i(4))), db.query("SELECT id FROM accounts WHERE owner = 'choi'"))
+    }
+
     @Test
     fun `트랜잭션 제어 오류`() = withDb { db ->
         val s = db.session()
